@@ -1,0 +1,10 @@
+**/thirdparty
+**/logs
+**/node_modules
+**/.DS_Store
+**/dist
+**/SimpleClaw.code-workspace
+**/simpleclaw
+**/.simpleclaw
+./cmd
+goscript/packages/*.go
