@@ -13,7 +13,14 @@
 | `errors.go` | ErrorClassifier — 错误分类与重试决策 |
 | `cooldown.go` | CooldownTracker — 智能冷却退避追踪 |
 | `transcription.go` | 语音转写接口与 Groq Whisper 实现 |
+| `cost.go` | 成本追踪核心类型（TokenUsage、CostRecord、BudgetCheck） |
+| `pricing.go` | 模型费率表（主流 LLM 每百万 token 价格） |
+| `cost_storage.go` | 费用记录 JSONL 持久化（按日分文件） |
+| `cost_tracker.go` | CostTracker — 费用追踪 + 预算网关 |
+| `context_window.go` | 模型上下文窗口大小映射 |
 | `providers_test.go` | 单元测试 |
+| `cost_test.go` | 成本追踪测试 |
+| `context_window_test.go` | 上下文窗口测试 |
 
 ## 核心接口
 
@@ -134,3 +141,50 @@ type TranscriptionProvider interface {
 | qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | ollama | `http://localhost:11434/v1` |
 | vllm | `http://localhost:8000/v1` |
+
+## LLM 成本追踪 (`cost*.go`)
+
+自动追踪每次 LLM 调用的 token 用量和费用，支持预算限额和预警。
+
+### 费率表 (`pricing.go`)
+
+内置主流模型的每百万 token 价格（美元），未知模型费用记为 0，不阻断调用。
+
+### CostTracker (`cost_tracker.go`)
+
+```go
+tracker := providers.NewCostTracker(providers.CostTrackerConfig{
+    StorageDir:      "~/.simpleclaw/costs",
+    DailyLimitUSD:   5.0,   // 日限额（美元）
+    MonthlyLimitUSD: 100.0, // 月限额
+    WarnThreshold:   0.8,   // 80% 预警
+})
+
+// 记录一次调用
+tracker.Record(ctx, "anthropic/claude-sonnet-4-20250514", usage)
+
+// 预算检查（在调用 LLM 前）
+check := tracker.CheckBudget()
+if check.Blocked {
+    // 超出预算，拒绝调用
+}
+
+// 费用统计
+summary := tracker.GetSummary()
+fmt.Printf("Today: $%.4f, Month: $%.4f\n", summary.TodayUSD, summary.MonthUSD)
+```
+
+### 持久化 (`cost_storage.go`)
+
+- 按日分文件：`costs/2026-04-15.jsonl`
+- 每行一条 JSON 费用记录
+- 支持缓存聚合值，避免每次查询全量扫描
+
+## 上下文窗口 (`context_window.go`)
+
+模型上下文窗口大小映射表，用于自动截断时确定 token 预算：
+
+```go
+windowSize := providers.GetContextWindow("anthropic/claude-sonnet-4-20250514")
+// 返回该模型的最大上下文 token 数
+```

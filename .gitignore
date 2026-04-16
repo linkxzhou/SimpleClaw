@@ -8,3 +8,6 @@
 **/.simpleclaw
 ./cmd
 goscript/packages/*.go
+**/thirdparty
+.session_tmps
+./output

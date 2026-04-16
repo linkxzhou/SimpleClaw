@@ -6,13 +6,20 @@ import (
 	"time"
 )
 
+// SessionMessage 表示会话中的一条消息（强类型，替代 map[string]interface{}）。
+type SessionMessage struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
 // Session 表示一个对话会话。
 type Session struct {
-	Key       string                   `json:"key"`                // 会话键（格式：channel:chat_id）
-	Messages  []map[string]interface{} `json:"messages"`           // 消息历史
-	CreatedAt time.Time                `json:"created_at"`         // 创建时间
-	UpdatedAt time.Time                `json:"updated_at"`         // 最后更新时间
-	Metadata  map[string]interface{}   `json:"metadata,omitempty"` // 额外元数据（可选）
+	Key       string                 `json:"key"`                // 会话键（格式：channel:chat_id）
+	Messages  []SessionMessage       `json:"messages"`           // 消息历史
+	CreatedAt time.Time              `json:"created_at"`         // 创建时间
+	UpdatedAt time.Time              `json:"updated_at"`         // 最后更新时间
+	Metadata  map[string]interface{} `json:"metadata,omitempty"` // 额外元数据（可选）
 }
 
 // NewSession 创建一个新的空会话。
@@ -20,7 +27,7 @@ func NewSession(key string) *Session {
 	now := time.Now()
 	return &Session{
 		Key:       key,
-		Messages:  make([]map[string]interface{}, 0),
+		Messages:  make([]SessionMessage, 0),
 		CreatedAt: now,
 		UpdatedAt: now,
 		Metadata:  make(map[string]interface{}),
@@ -28,23 +35,18 @@ func NewSession(key string) *Session {
 }
 
 // AddMessage 向会话中添加一条消息。
-// extra 中的键值对会合并到消息 map 中。
-func (s *Session) AddMessage(role, content string, extra map[string]interface{}) {
-	msg := map[string]interface{}{
-		"role":      role,
-		"content":   content,
-		"timestamp": time.Now().Format(time.RFC3339),
-	}
-	for k, v := range extra {
-		msg[k] = v
-	}
-	s.Messages = append(s.Messages, msg)
+func (s *Session) AddMessage(role, content string) {
+	s.Messages = append(s.Messages, SessionMessage{
+		Role:      role,
+		Content:   content,
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
 	s.UpdatedAt = time.Now()
 }
 
-// GetHistory 返回最近的消息历史（LLM 格式，仅包含 role 和 content）。
+// GetHistory 返回最近的消息历史（仅 role + content）。
 // maxMessages <= 0 时默认返回最近 50 条。
-func (s *Session) GetHistory(maxMessages int) []map[string]interface{} {
+func (s *Session) GetHistory(maxMessages int) []SessionMessage {
 	if maxMessages <= 0 {
 		maxMessages = 50
 	}
@@ -52,11 +54,11 @@ func (s *Session) GetHistory(maxMessages int) []map[string]interface{} {
 	if len(msgs) > maxMessages {
 		msgs = msgs[len(msgs)-maxMessages:]
 	}
-	result := make([]map[string]interface{}, len(msgs))
+	result := make([]SessionMessage, len(msgs))
 	for i, m := range msgs {
-		result[i] = map[string]interface{}{
-			"role":    m["role"],
-			"content": m["content"],
+		result[i] = SessionMessage{
+			Role:    m.Role,
+			Content: m.Content,
 		}
 	}
 	return result
@@ -64,6 +66,6 @@ func (s *Session) GetHistory(maxMessages int) []map[string]interface{} {
 
 // Clear 清空会话中的所有消息。
 func (s *Session) Clear() {
-	s.Messages = make([]map[string]interface{}, 0)
+	s.Messages = make([]SessionMessage, 0)
 	s.UpdatedAt = time.Now()
 }

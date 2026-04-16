@@ -104,7 +104,9 @@ Information about the user goes here.
 
 	// 创建 memory 目录和 MEMORY.md
 	memoryDir := filepath.Join(workspace, "memory")
-	_ = os.MkdirAll(memoryDir, 0755)
+	if err := os.MkdirAll(memoryDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] Failed to create memory dir: %v\n", err)
+	}
 	memoryFile := filepath.Join(memoryDir, "MEMORY.md")
 	if _, err := os.Stat(memoryFile); err != nil {
 		content := `# Long-term Memory

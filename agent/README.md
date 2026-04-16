@@ -31,8 +31,13 @@
 agent/
 ├── types.go          核心类型定义（消息、LLM 接口、Tool 接口、Session）
 ├── agent.go          Agent 主循环（消息处理、ReAct 循环、system 消息路由）
-├── context.go        上下文构建器（system prompt 组装、消息列表管理）
-├── memory.go         记忆系统（长期记忆、每日笔记、近期记忆）
+├── context.go        上下文构建器（system prompt 组装、结构化记忆集成）
+├── loop.go           ReAct 循环实现
+├── approval.go       审批网关（三级自治：Full/Supervised/ReadOnly + 审计日志）
+├── registry.go       Agent 注册表（多 Agent 角色配置、团队编排）
+├── tags.go           Bracket Tag 解析器（[@agent: msg] 和 [#team: msg]）
+├── chain.go          Per-Agent 串行执行管理（同 Agent 串行，跨 Agent 并行）
+├── subturn.go        SubTurn 子回合机制（同步/异步、并发控制、深度限制、TokenBudget）
 ├── skills.go         技能加载器（workspace/builtin 技能、依赖检查、渐进式加载）
 ├── subagent.go       子 Agent 管理器（独立工具集、聚焦 prompt、结果回报）
 └── tools/
@@ -199,6 +204,59 @@ Agent 的核心处理流程：
 3. 子 Agent 独立运行 ReAct 循环
 4. 完成后调用 `announceResult()` 将结果注入 MessageBus
 5. 主 Agent 收到 system 消息后路由回原始 channel
+
+### 审批网关 (`approval.go`)
+
+`ApprovalManager` 在工具调用前实施权限拦截，支持三级自治：
+
+| 自治级别 | 说明 | 行为 |
+|---------|------|------|
+| `full` | 完全自治 | 所有操作自动通过 |
+| `supervised` | 监督模式 | 只读操作自动通过，写操作需确认 |
+| `read_only` | 只读模式 | 只允许读操作，写操作直接拒绝 |
+
+- 工具按 `read`/`write` 分类（默认 `read`，`exec`/`write_file`/`edit_file` 等为 `write`）
+- 审计日志持久化到 JSONL 文件（`{workspace}/audit.jsonl`）
+- 支持自定义 `ConfirmFunc` 回调（CLI 模式交互确认）
+
+### Agent 注册表 (`registry.go`)
+
+`AgentRegistry` 管理多 Agent 角色配置和团队编排：
+
+- `RegisterAgent(profile)` — 注册 Agent（ID、模型、系统提示词、工具集）
+- `RegisterTeam(config)` — 注册团队（成员列表、leader）
+- `GetTeammates(agentID, teamID)` — 获取队友（不含自己）
+- 线程安全（`sync.RWMutex`）
+
+### Bracket Tag 解析器 (`tags.go`)
+
+从 LLM 响应中提取标签并路由消息：
+
+- `[@agent: msg]` — @mention，路由到指定 Agent
+- `[@a,b: msg]` — 多目标扇出
+- `[#team: msg]` — 团队广播
+- 基于括号深度计数的状态机解析器，支持嵌套括号（如 `[@coder: fix arr[0]]`）
+- 自动过滤自引用和未注册的 Agent
+
+### Agent Chain (`chain.go`)
+
+`AgentChainManager` 管理 per-Agent 串行执行：
+
+- 同一 Agent 的消息严格按 FIFO 顺序串行处理
+- 不同 Agent 之间的 Chain 并行运行
+- 每个 Agent 一个 goroutine + 缓冲队列（100 条）
+- panic 恢复保护，不影响后续消息处理
+
+### SubTurn 子回合 (`subturn.go`)
+
+`SubTurnManager` 提供精细可控的嵌套执行单元：
+
+- **同步/异步双模式** — 同步阻塞等结果，异步后台运行
+- **并发控制** — 信号量限制（默认 5 个并发子回合）
+- **深度限制** — 最大嵌套深度（默认 3 层），通过 context 传递
+- **独立超时** — 每个子回合有独立 context 和超时控制
+- **TokenBudget** — CAS 原子计数器，多并发子回合间共享 token 预算
+- **EphemeralSession** — 临时会话（不持久化），防止污染父 session
 
 ### 工具注册中心 (`tools/registry.go`)
 

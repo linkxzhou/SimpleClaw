@@ -163,8 +163,8 @@ func TestChatTextResponse(t *testing.T) {
 	defer srv.Close()
 
 	req := ChatRequest{
-		Messages: []map[string]interface{}{
-			{"role": "user", "content": "Hello!"},
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Hello!"},
 		},
 	}
 
@@ -221,11 +221,11 @@ func TestChatToolCallResponse(t *testing.T) {
 	defer srv.Close()
 
 	result, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{
-			{"role": "user", "content": "Search for Go testing"},
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Search for Go testing"},
 		},
-		Tools: []map[string]interface{}{
-			{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		Tools: []ChatToolDef{
+			{Type: "function", Function: ChatToolFunction{Name: "web_search"}},
 		},
 	})
 	if err != nil {
@@ -272,8 +272,8 @@ func TestChatAPIError(t *testing.T) {
 	defer srv.Close()
 
 	result, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{
-			{"role": "user", "content": "hello"},
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hello"},
 		},
 	})
 
@@ -300,8 +300,8 @@ func TestChatServerError500(t *testing.T) {
 	defer srv.Close()
 
 	result, err := p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{
-			{"role": "user", "content": "hello"},
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hello"},
 		},
 	})
 	// 非 200 返回 *ProviderError
@@ -330,8 +330,8 @@ func TestChatContextCancelled(t *testing.T) {
 	cancel() // 立即取消
 
 	_, err := p.Chat(ctx, ChatRequest{
-		Messages: []map[string]interface{}{
-			{"role": "user", "content": "hello"},
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hello"},
 		},
 	})
 	if err == nil {
@@ -358,7 +358,7 @@ func TestChatCustomModel(t *testing.T) {
 	defer srv.Close()
 
 	p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{{"role": "user", "content": "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 		Model:    "claude-3-opus",
 	})
 
@@ -383,7 +383,7 @@ func TestChatNoAuthHeader(t *testing.T) {
 
 	p := NewOpenAIProvider(OpenAIConfig{APIKey: "", APIBase: srv.URL})
 	p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{{"role": "user", "content": "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	})
 
 	if authHeader != "" {
@@ -412,9 +412,9 @@ func TestChatWithTools(t *testing.T) {
 	defer srv.Close()
 
 	p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{{"role": "user", "content": "hi"}},
-		Tools: []map[string]interface{}{
-			{"type": "function", "function": map[string]interface{}{"name": "test"}},
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Tools: []ChatToolDef{
+			{Type: "function", Function: ChatToolFunction{Name: "test"}},
 		},
 	})
 
@@ -445,7 +445,7 @@ func TestChatWithoutTools(t *testing.T) {
 	defer srv.Close()
 
 	p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{{"role": "user", "content": "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	})
 
 	if hasTools {
@@ -743,7 +743,7 @@ func TestChatDefaultMaxTokensAndTemperature(t *testing.T) {
 
 	// MaxTokens=0, Temperature=0 → 应使用默认值
 	p.Chat(context.Background(), ChatRequest{
-		Messages: []map[string]interface{}{{"role": "user", "content": "hi"}},
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	})
 
 	if receivedMaxTokens != 4096 {

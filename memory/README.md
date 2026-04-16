@@ -10,7 +10,16 @@
 | `manager.go` | SessionManager — 会话生命周期管理与 JSONL 持久化 |
 | `state.go` | StateManager — 系统状态的原子持久化 |
 | `store.go` | MemoryStore — 长期记忆与每日笔记管理 |
+| `entry.go` | 结构化记忆条目（四级分类 + 时间衰减评分） |
+| `structured.go` | JSONL 结构化记忆存储（与 Markdown 并存） |
+| `decay.go` | 记忆时间衰减（指数衰减模型） |
+| `dream.go` | Dream 两阶段记忆整合服务（LLM 分析 → 写入） |
+| `history.go` | HistoryStore 对话历史追加存储（增量消费） |
+| `truncation.go` | 智能上下文截断（安全切割点归档） |
 | `session_test.go` | 会话相关单元测试 |
+| `decay_test.go` | 衰减测试 |
+| `dream_test.go` | Dream 测试 |
+| `truncation_test.go` | 截断测试 |
 
 ## 核心组件
 
@@ -108,3 +117,77 @@ store := memory.NewMemoryStore("/path/to/workspace")
 store.AppendToday("用户讨论了项目架构")
 ctx := store.GetMemoryContext()
 ```
+
+## 结构化记忆 (`entry.go` + `structured.go`)
+
+在原有 Markdown 文件基础上，新增 JSONL 结构化查询后端。Markdown 作为人可读视图，JSONL 作为机器查询层。
+
+### 四级分类
+
+| 类别 | 说明 | 衰减 |
+|------|------|------|
+| `core` | 核心事实（名称、角色、偏好） | **永不衰减** |
+| `daily` | 日常记录 | 指数衰减 |
+| `conversation` | 对话摘要 | 指数衰减 |
+| `procedural` | 操作流程（如何做某事） | 指数衰减 |
+
+### 记忆条目
+
+```go
+type MemoryEntry struct {
+    ID        string         // 唯一标识
+    Category  MemoryCategory // 分类
+    Content   string         // 内容
+    Score     float64        // 重要性评分 (0-1)
+    CreatedAt time.Time      // 创建时间
+    Tags      []string       // 标签
+}
+```
+
+## 记忆衰减 (`decay.go`)
+
+对非 Core 类别的记忆条目应用指数衰减：
+
+```
+decayed_score = score × 2^(-age_days / half_life_days)
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `HalfLifeDays` | 7 | 半衰期（天） |
+| `MinScore` | 0.05 | 低于此分值的条目标记为可回收 |
+
+- `Core` 类别永不衰减
+- `ApplyDecay(entries)` — 批量应用衰减，返回更新后的条目列表
+- `PruneExpired(entries)` — 移除分值低于阈值的条目
+
+## Dream 记忆整合 (`dream.go`)
+
+两阶段 LLM 驱动的自动记忆整合：
+
+```
+Phase 1 — 分析：读取 HistoryStore 新增对话 → LLM 提取事实/偏好/摘要
+Phase 2 — 编辑：将提取结果写入结构化记忆 + 同步更新 MEMORY.md
+```
+
+- 由 Cron 定时触发（默认每小时）
+- 通过 HistoryStore 的 cursor 机制增量消费，不重复处理
+- Phase 1 和 Phase 2 可独立运行（支持只分析不写入）
+
+## 对话历史 (`history.go`)
+
+`HistoryStore` 追加式对话记录存储：
+
+- 每轮对话追加到 `history.jsonl`
+- 通过 cursor（字节偏移量）实现增量读取
+- Dream 服务通过 `ReadSince(cursor)` 消费新增记录
+- 不修改已有记录，只追加
+
+## 智能上下文截断 (`truncation.go`)
+
+当对话历史超过模型上下文窗口时，自动在安全切割点归档旧消息：
+
+- **System 消息始终保留** — 不参与截断
+- **Tool 对完整性** — `tool_use` → `tool_result` 消息对不拆分
+- **安全切割点** — 在 user 消息边界处截断（不在 assistant 回复中间切）
+- Token 估算使用 `utils.EstimateTokens`（轻量级，无外部依赖）

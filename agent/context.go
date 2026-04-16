@@ -15,9 +15,12 @@ import (
 // ContextBuilder 上下文构建器
 // 负责组装 system prompt + 对话消息
 type ContextBuilder struct {
-	workspace string
-	memory    *memory.MemoryStore
-	skills    *SkillsLoader
+	workspace          string
+	memory             *memory.MemoryStore
+	structuredMemory   *memory.StructuredMemory // 结构化记忆（可选）
+	skills             *SkillsLoader
+	snippets           *SnippetStore            // 代码片段存储（可选）
+	memoryTokenBudget  int // 记忆 token 预算（0 = 不限）
 }
 
 // 引导文件列表
@@ -25,10 +28,16 @@ var bootstrapFiles = []string{"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "ID
 
 // NewContextBuilder 创建上下文构建器
 func NewContextBuilder(workspace string) *ContextBuilder {
+	memoryDir := filepath.Join(workspace, "memory")
+	entriesPath := filepath.Join(memoryDir, "entries.jsonl")
+	sm, _ := memory.NewStructuredMemory(entriesPath)
+
 	return &ContextBuilder{
-		workspace: workspace,
-		memory:    memory.NewMemoryStore(workspace),
-		skills:    NewSkillsLoader(workspace, ""),
+		workspace:         workspace,
+		memory:            memory.NewMemoryStore(workspace),
+		structuredMemory:  sm,
+		skills:            NewSkillsLoader(workspace, ""),
+		memoryTokenBudget: 4000, // 默认 4000 token 预算
 	}
 }
 
@@ -44,9 +53,9 @@ func (c *ContextBuilder) BuildSystemPrompt(skillNames ...string) string {
 		parts = append(parts, bootstrap)
 	}
 
-	// 3. 记忆上下文
-	if memory := c.memory.GetMemoryContext(); memory != "" {
-		parts = append(parts, "# Memory\n\n"+memory)
+	// 3. 记忆上下文（优先使用结构化记忆，回退到 Markdown）
+	if memCtx := c.buildMemoryContext(); memCtx != "" {
+		parts = append(parts, "# Memory\n\n"+memCtx)
 	}
 
 	// 4. 始终加载的技能（完整内容）
@@ -65,6 +74,17 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 %s`, summary))
+	}
+
+	// 6. Go 代码生成策略（引导 Agent 主动使用 go_run/go_agent）
+	advisor := &GoCodegenAdvisor{}
+	parts = append(parts, advisor.BuildPrompt())
+
+	// 7. 代码片段摘要（供 Agent 复用已保存片段）
+	if c.snippets != nil {
+		if summary := c.snippets.BuildSummary(10); summary != "" {
+			parts = append(parts, summary)
+		}
 	}
 
 	return strings.Join(parts, "\n\n---\n\n")
@@ -108,6 +128,48 @@ For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. When using tools, explain what you're doing.
 When remembering something, write to %s/memory/MEMORY.md`, now, absWorkspace, absWorkspace, absWorkspace, absWorkspace, absWorkspace)
+}
+
+// buildMemoryContext 构建记忆上下文。
+// 优先使用结构化记忆（按分数排序 + token 预算截断），无条目时回退到 Markdown 记忆。
+func (c *ContextBuilder) buildMemoryContext() string {
+	// 尝试结构化记忆
+	if c.structuredMemory != nil && c.structuredMemory.Len() > 0 {
+		entries := c.structuredMemory.All()
+		memory.ApplyTimeDecay(entries)
+		memory.SortByScore(entries)
+
+		selected := memory.SelectByTokenBudget(entries, c.memoryTokenBudget)
+		if len(selected) > 0 {
+			var parts []string
+			for _, e := range selected {
+				dateStr := ""
+				if len(e.Timestamp) >= 10 {
+					dateStr = e.Timestamp[:10]
+				}
+				parts = append(parts, fmt.Sprintf("[%s|%s] %s", e.Category, dateStr, e.Content))
+			}
+			return strings.Join(parts, "\n")
+		}
+	}
+
+	// 回退到 Markdown 记忆
+	return c.memory.GetMemoryContext()
+}
+
+// GetStructuredMemory 返回结构化记忆存储（供外部写入）。
+func (c *ContextBuilder) GetStructuredMemory() *memory.StructuredMemory {
+	return c.structuredMemory
+}
+
+// SetSnippetStore 设置代码片段存储。
+func (c *ContextBuilder) SetSnippetStore(store *SnippetStore) {
+	c.snippets = store
+}
+
+// GetSnippetStore 返回代码片段存储。
+func (c *ContextBuilder) GetSnippetStore() *SnippetStore {
+	return c.snippets
 }
 
 // loadBootstrapFiles 加载引导文件

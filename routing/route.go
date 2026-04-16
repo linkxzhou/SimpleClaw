@@ -1,5 +1,8 @@
-// Package routing 提供多 Agent 消息路由解析。
+// Package routing 提供多 Agent 消息路由解析（实验性）。
 // 支持 7 级优先级级联路由：peer > parent_peer > guild > team > account > channel_wildcard > default。
+//
+// NOTE: 此包已实现但尚未接入主流程（cmd/gateway.go 当前为单 Agent 模式）。
+// 计划在 plan3（多 Agent 团队协作）中正式接入。在此之前请勿依赖其 API 稳定性。
 
 package routing
 

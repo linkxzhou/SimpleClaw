@@ -15,6 +15,7 @@ import (
 	"github.com/linkxzhou/SimpleClaw/config"
 	"github.com/linkxzhou/SimpleClaw/memory"
 	"github.com/linkxzhou/SimpleClaw/providers"
+	"github.com/linkxzhou/SimpleClaw/utils"
 )
 
 // ============ MessageBus 适配器 ============
@@ -119,53 +120,44 @@ func (a *FallbackProviderAdapter) GetDefaultModel() string {
 // ============ 共享转换辅助函数 ============
 
 // buildChatRequest 将 agent 内部消息格式转换为 providers.ChatRequest。
+// 强类型直接映射，无需 map[string]interface{} 中间层。
 func buildChatRequest(messages []agent.Message, toolDefs []agent.ToolDef, model string) providers.ChatRequest {
-	// 转换 messages -> []map[string]interface{}
-	msgsRaw := make([]map[string]interface{}, len(messages))
+	msgs := make([]providers.ChatMessage, len(messages))
 	for i, m := range messages {
-		entry := map[string]interface{}{
-			"role":    m.Role,
-			"content": m.Content,
+		msg := providers.ChatMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
 		}
-		if m.ToolCallID != "" {
-			entry["tool_call_id"] = m.ToolCallID
+		for _, tc := range m.ToolCalls {
+			msg.ToolCalls = append(msg.ToolCalls, providers.ChatToolCallEntry{
+				ID:   tc.ID,
+				Type: tc.Type,
+				Function: providers.ChatToolCallFunction{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			})
 		}
-		if m.Name != "" {
-			entry["name"] = m.Name
-		}
-		if len(m.ToolCalls) > 0 {
-			tcs := make([]map[string]interface{}, len(m.ToolCalls))
-			for j, tc := range m.ToolCalls {
-				tcs[j] = map[string]interface{}{
-					"id":   tc.ID,
-					"type": tc.Type,
-					"function": map[string]interface{}{
-						"name":      tc.Function.Name,
-						"arguments": tc.Function.Arguments,
-					},
-				}
-			}
-			entry["tool_calls"] = tcs
-		}
-		msgsRaw[i] = entry
+		msgs[i] = msg
 	}
 
-	// 转换 toolDefs -> []map[string]interface{}
-	toolsRaw := make([]map[string]interface{}, len(toolDefs))
+	tds := make([]providers.ChatToolDef, len(toolDefs))
 	for i, td := range toolDefs {
-		toolsRaw[i] = map[string]interface{}{
-			"type": td.Type,
-			"function": map[string]interface{}{
-				"name":        td.Function.Name,
-				"description": td.Function.Description,
-				"parameters":  td.Function.Parameters,
+		tds[i] = providers.ChatToolDef{
+			Type: td.Type,
+			Function: providers.ChatToolFunction{
+				Name:        td.Function.Name,
+				Description: td.Function.Description,
+				Parameters:  td.Function.Parameters,
 			},
 		}
 	}
 
 	return providers.ChatRequest{
-		Messages: msgsRaw,
-		Tools:    toolsRaw,
+		Messages: msgs,
+		Tools:    tds,
 		Model:    model,
 	}
 }
@@ -209,10 +201,8 @@ func (a *SessionStoreAdapter) GetOrCreateSession(key string) []agent.Message {
 	history := s.GetHistory(50)
 	result := make([]agent.Message, 0, len(history))
 	for _, m := range history {
-		role, _ := m["role"].(string)
-		content, _ := m["content"].(string)
-		if role != "" {
-			result = append(result, agent.Message{Role: role, Content: content})
+		if m.Role != "" {
+			result = append(result, agent.Message{Role: m.Role, Content: m.Content})
 		}
 	}
 	return result
@@ -222,7 +212,7 @@ func (a *SessionStoreAdapter) SaveSession(key string, messages []agent.Message) 
 	s := a.mgr.GetOrCreate(key)
 	s.Clear()
 	for _, m := range messages {
-		s.AddMessage(m.Role, m.Content, nil)
+		s.AddMessage(m.Role, m.Content)
 	}
 	if err := a.mgr.Save(s); err != nil {
 		a.logger.Warn("failed to save session", "key", key, "error", err)
@@ -258,6 +248,25 @@ func buildProviderStack(cfg *config.Config, logger *slog.Logger) (agent.LLMProvi
 	classifier := providers.NewErrorClassifier()
 	cooldownTracker := providers.NewCooldownTracker()
 	fallbackChain := providers.NewFallbackChain(classifier, cooldownTracker, factory, logger)
+
+	// 费用追踪（可选）
+	if cfg.Cost.Enabled {
+		dataPath, _ := utils.GetDataPath()
+		costCfg := providers.CostConfig{
+			Enabled:         cfg.Cost.Enabled,
+			DailyLimitUSD:   cfg.Cost.DailyLimitUSD,
+			MonthlyLimitUSD: cfg.Cost.MonthlyLimitUSD,
+			WarnAtPercent:   cfg.Cost.WarnAtPercent,
+		}
+		if ct, err := providers.NewCostTracker(costCfg, dataPath, logger); err == nil {
+			fallbackChain.SetCostTracker(ct)
+			logger.Info("cost tracker enabled",
+				"daily_limit", costCfg.DailyLimitUSD,
+				"monthly_limit", costCfg.MonthlyLimitUSD)
+		} else {
+			logger.Warn("failed to init cost tracker", "error", err)
+		}
+	}
 
 	fbAdapter, err := NewFallbackProviderAdapter(fallbackChain, primaryModel, fallbackModels, logger)
 	if err != nil {

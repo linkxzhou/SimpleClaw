@@ -18,10 +18,11 @@ type Candidate struct {
 
 // FallbackChain 容错执行链。
 type FallbackChain struct {
-	classifier *ErrorClassifier
-	cooldown   *CooldownTracker
-	factory    *ProviderFactory
-	logger     *slog.Logger
+	classifier  *ErrorClassifier
+	cooldown    *CooldownTracker
+	factory     *ProviderFactory
+	costTracker *CostTracker // 可选，为 nil 时不做费用追踪
+	logger      *slog.Logger
 }
 
 // NewFallbackChain 创建容错执行链。
@@ -35,6 +36,11 @@ func NewFallbackChain(classifier *ErrorClassifier, cooldown *CooldownTracker, fa
 		factory:    factory,
 		logger:     logger,
 	}
+}
+
+// SetCostTracker 设置费用追踪器（可选）。
+func (fc *FallbackChain) SetCostTracker(ct *CostTracker) {
+	fc.costTracker = ct
 }
 
 // ResolveCandidates 从 primary + fallbacks 解析去重候选列表。
@@ -70,6 +76,19 @@ func (fc *FallbackChain) ResolveCandidates(primary string, fallbacks []string) (
 
 // Execute 按优先级逐个尝试候选 Provider，返回第一个成功的响应。
 func (fc *FallbackChain) Execute(ctx context.Context, candidates []Candidate, req ChatRequest) (*LLMResponse, error) {
+	// 预算检查（调用前）
+	if fc.costTracker != nil && fc.costTracker.IsEnabled() {
+		estimated := EstimateCost(req.Model, estimateInputTokens(req), req.MaxTokens/2)
+		switch fc.costTracker.CheckBudget(estimated) {
+		case BudgetExceeded:
+			s := fc.costTracker.GetSummary()
+			return nil, fmt.Errorf("budget exceeded: daily $%.2f/$%.2f, monthly $%.2f/$%.2f",
+				s.DailyCostUSD, s.DailyLimitUSD, s.MonthlyCostUSD, s.MonthlyLimitUSD)
+		case BudgetWarning:
+			fc.logger.Warn("cost warning: approaching budget limit")
+		}
+	}
+
 	var attempts []Attempt
 
 	for _, candidate := range candidates {
@@ -107,6 +126,7 @@ func (fc *FallbackChain) Execute(ctx context.Context, candidates []Candidate, re
 				}
 			} else {
 				fc.cooldown.MarkSuccess(candidate.ModelKey)
+				fc.recordCost(candidate.ModelKey, resp)
 				return resp, nil
 			}
 		}
@@ -144,5 +164,40 @@ func (fc *FallbackChain) ExecuteDirect(ctx context.Context, modelKey string, req
 
 	_, model := SplitModelKey(modelKey)
 	req.Model = model
-	return provider.Chat(ctx, req)
+	resp, err := provider.Chat(ctx, req)
+	if err == nil {
+		fc.recordCost(modelKey, resp)
+	}
+	return resp, err
+}
+
+// recordCost 记录一次调用的实际费用。
+func (fc *FallbackChain) recordCost(modelKey string, resp *LLMResponse) {
+	if fc.costTracker == nil || resp == nil {
+		return
+	}
+	inputTokens, _ := resp.Usage["prompt_tokens"]
+	outputTokens, _ := resp.Usage["completion_tokens"]
+	if inputTokens == 0 && outputTokens == 0 {
+		return
+	}
+
+	cost := EstimateCost(modelKey, inputTokens, outputTokens)
+	_ = fc.costTracker.RecordUsage(TokenUsage{
+		Model:        modelKey,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
+		CostUSD:      cost,
+	}, "")
+}
+
+// estimateInputTokens 粗估输入 token 数（按平均每条消息 100 token）。
+func estimateInputTokens(req ChatRequest) int {
+	return len(req.Messages) * 100
+}
+
+// GetCostTracker 返回关联的 CostTracker（可能为 nil）。
+func (fc *FallbackChain) GetCostTracker() *CostTracker {
+	return fc.costTracker
 }

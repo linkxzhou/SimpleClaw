@@ -71,14 +71,32 @@ func cmdAgent(args []string) {
 		sessionStore = NewSessionStoreAdapter(sessionMgr, logger)
 	}
 
+	// 对话历史存储（供 Dream 消费）
+	memoryDir := filepath.Join(cfg.WorkspacePath(), "memory")
+	historyStore, _ := memory.NewHistoryStore(memoryDir)
+
+	// 审批管理器（CLI = 交互式）
+	var approvalMgr *agent.ApprovalManager
+	approvalCfg := agent.ApprovalConfig{
+		Level:       agent.AutonomyLevel(cfg.Approval.Level),
+		AutoApprove: cfg.Approval.AutoApprove,
+		AlwaysAsk:   cfg.Approval.AlwaysAsk,
+	}
+	auditPath := filepath.Join(dataPath, "audit.jsonl")
+	approvalMgr = agent.NewApprovalManager(approvalCfg, agent.CLIPrompt, auditPath, logger)
+
 	agentInstance := agent.NewAgent(agent.AgentConfig{
-		Bus:           NewBusAdapter(msgBus),
-		Provider:      providerLLM,
-		Workspace:     cfg.WorkspacePath(),
-		Model:         primaryModel,
-		MaxIterations: cfg.Agents.Defaults.MaxToolIterations,
-		BraveAPIKey:   cfg.Tools.Web.Search.APIKey,
-		SessionStore:  sessionStore,
+		Bus:             NewBusAdapter(msgBus),
+		Provider:        providerLLM,
+		Workspace:       cfg.WorkspacePath(),
+		Model:           primaryModel,
+		MaxIterations:   cfg.Agents.Defaults.MaxToolIterations,
+		MaxContextRunes: cfg.Agents.Defaults.MaxContextRunes,
+		MaxTokens:       cfg.Agents.Defaults.MaxTokens,
+		BraveAPIKey:     cfg.Tools.Web.Search.APIKey,
+		SessionStore:    sessionStore,
+		HistoryStore:    historyStore,
+		ApprovalManager: approvalMgr,
 	})
 
 	ctx := context.Background()

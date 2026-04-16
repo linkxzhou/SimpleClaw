@@ -10,11 +10,10 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
-
-	"github.com/linkxzhou/SimpleClaw/utils"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -65,30 +64,19 @@ type Importer struct {
 // NewImporter 创建新的导入器实例。
 // ssaPkgs 参数用于注册脚本内部已编译的 SSA 包（支持跨包导入）。
 func NewImporter(ssaPkgs ...*ssa.Package) *Importer {
-	// 初始化基本类型缓存：reflect.Type → types.Type
 	imp := &Importer{
-		typeCache: map[reflect.Type]types.Type{
-			reflect.TypeOf(func(bool) {}).In(0):       types.Typ[types.Bool],
-			reflect.TypeOf(func(int) {}).In(0):        types.Typ[types.Int],
-			reflect.TypeOf(func(int8) {}).In(0):       types.Typ[types.Int8],
-			reflect.TypeOf(func(int16) {}).In(0):      types.Typ[types.Int16],
-			reflect.TypeOf(func(int32) {}).In(0):      types.Typ[types.Int32],
-			reflect.TypeOf(func(int64) {}).In(0):      types.Typ[types.Int64],
-			reflect.TypeOf(func(uint) {}).In(0):       types.Typ[types.Uint],
-			reflect.TypeOf(func(uint8) {}).In(0):      types.Typ[types.Uint8],
-			reflect.TypeOf(func(uint16) {}).In(0):     types.Typ[types.Uint16],
-			reflect.TypeOf(func(uint32) {}).In(0):     types.Typ[types.Uint32],
-			reflect.TypeOf(func(uint64) {}).In(0):     types.Typ[types.Uint64],
-			reflect.TypeOf(func(uintptr) {}).In(0):    types.Typ[types.Uintptr],
-			reflect.TypeOf(func(float32) {}).In(0):    types.Typ[types.Float32],
-			reflect.TypeOf(func(float64) {}).In(0):    types.Typ[types.Float64],
-			reflect.TypeOf(func(complex64) {}).In(0):  types.Typ[types.Complex64],
-			reflect.TypeOf(func(complex128) {}).In(0): types.Typ[types.Complex128],
-			reflect.TypeOf(func(string) {}).In(0):     types.Typ[types.String],
-		},
+		typeCache:       make(map[reflect.Type]types.Type),
 		externalObjects: make(map[string]*ExternalObject),
 		ssaPackages:     make(map[string]*ssa.Package),
 		packageCache:    make(map[string]*types.Package),
+	}
+
+	// 初始化基本类型缓存：reflect.Type → types.Type
+	// 使用 builtinKindMap 的反向映射避免手动枚举
+	for kind, basicKind := range builtinKindMap {
+		if rt := reflectTypeFromKind(kind); rt != nil {
+			imp.typeCache[rt] = types.Typ[basicKind]
+		}
 	}
 
 	// 注册脚本内部 SSA 包
@@ -97,6 +85,48 @@ func NewImporter(ssaPkgs ...*ssa.Package) *Importer {
 	}
 
 	return imp
+}
+
+// reflectTypeFromKind 根据 reflect.Kind 返回对应的 reflect.Type。
+func reflectTypeFromKind(k reflect.Kind) reflect.Type {
+	switch k {
+	case reflect.Bool:
+		return reflect.TypeOf(false)
+	case reflect.Int:
+		return reflect.TypeOf(int(0))
+	case reflect.Int8:
+		return reflect.TypeOf(int8(0))
+	case reflect.Int16:
+		return reflect.TypeOf(int16(0))
+	case reflect.Int32:
+		return reflect.TypeOf(int32(0))
+	case reflect.Int64:
+		return reflect.TypeOf(int64(0))
+	case reflect.Uint:
+		return reflect.TypeOf(uint(0))
+	case reflect.Uint8:
+		return reflect.TypeOf(uint8(0))
+	case reflect.Uint16:
+		return reflect.TypeOf(uint16(0))
+	case reflect.Uint32:
+		return reflect.TypeOf(uint32(0))
+	case reflect.Uint64:
+		return reflect.TypeOf(uint64(0))
+	case reflect.Uintptr:
+		return reflect.TypeOf(uintptr(0))
+	case reflect.Float32:
+		return reflect.TypeOf(float32(0))
+	case reflect.Float64:
+		return reflect.TypeOf(float64(0))
+	case reflect.Complex64:
+		return reflect.TypeOf(complex64(0))
+	case reflect.Complex128:
+		return reflect.TypeOf(complex128(0))
+	case reflect.String:
+		return reflect.TypeOf("")
+	default:
+		return nil
+	}
 }
 
 // Import 实现 types.Importer 接口。
@@ -344,7 +374,7 @@ func (imp *Importer) typeOf(t reflect.Type, _ *types.Package) types.Type {
 			ttype = types.Typ[basicKind]
 		} else {
 			ttype = types.Typ[types.Invalid]
-			utils.LogError(t.Kind(), " ", t.String(), " not supported")
+			slog.Error("type not supported", "kind", t.Kind(), "type", t.String())
 		}
 	}
 

@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/linkxzhou/SimpleClaw/goscript/internal/value"
-	"github.com/linkxzhou/SimpleClaw/utils"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -128,7 +128,7 @@ func callBuiltin(caller *execFrame, pos token.Pos, fn *ssa.Builtin, args []value
 		}
 
 		logMsg := fmt.Sprint(position.Filename, position.Line, strings.Join(parts, " "))
-		utils.LogInfo(caller.traceID, "|", logMsg)
+		slog.Info(logMsg, "traceID", caller.traceID)
 		return nil
 
 	case "len":
@@ -296,11 +296,11 @@ func executeInstr(frame *execFrame, instr ssa.Instruction) instrAction {
 	// 调试模式下输出每条指令的执行信息
 	if debugMode {
 		pos := frame.program.pkg.Prog.Fset.Position(instr.Pos())
-		utils.LogDebugf("exec %s: \t%s \t%T", pos, instr.String(), instr)
+		slog.Debug(fmt.Sprintf("exec %s: \t%s \t%T", pos, instr.String(), instr))
 		if val, ok := instr.(ssa.Value); ok {
 			v := *frame.env[val]
 			if v != nil && v.IsValid() {
-				utils.LogDebugf("\t\t\t%#v", v.Interface())
+				slog.Debug(fmt.Sprintf("\t\t\t%#v", v.Interface()))
 			}
 		}
 	}

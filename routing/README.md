@@ -83,3 +83,7 @@ route = resolver.Resolve("whatsapp", "user999", "chat789")
   ]
 }
 ```
+
+## 状态
+
+路由解析器已完整实现 7 级优先级匹配，但尚未接入 `gateway.go` 主流程（参见 `cmd/gateway.go` 中的 `TODO(plan3)`）。当前 gateway 仍使用单 Agent 模式，待接入后可实现多 Agent 自动路由。

@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/linkxzhou/SimpleClaw/config"
+	"github.com/linkxzhou/SimpleClaw/providers"
+	"github.com/linkxzhou/SimpleClaw/utils"
 )
 
 // cmdStatus 显示 SimpleClaw 系统状态。
@@ -67,6 +70,12 @@ func cmdStatus(args []string) {
 	printChannelStatus("  Discord   ", cfg.Channels.Discord.Enabled)
 	printChannelStatus("  WhatsApp  ", cfg.Channels.WhatsApp.Enabled)
 	printChannelStatus("  Feishu    ", cfg.Channels.Feishu.Enabled)
+
+	// 费用统计
+	if cfg.Cost.Enabled {
+		fmt.Println()
+		printCostStatus(cfg)
+	}
 }
 
 // cmdChannels 管理 channels（简化为状态显示）。
@@ -103,5 +112,62 @@ func printChannelStatus(label string, enabled bool) {
 		fmt.Printf("%s  enabled\n", label)
 	} else {
 		fmt.Printf("%s  disabled\n", label)
+	}
+}
+
+// printCostStatus 输出费用追踪状态。
+func printCostStatus(cfg *config.Config) {
+	fmt.Println("Cost:")
+	dataPath, err := utils.GetDataPath()
+	if err != nil {
+		fmt.Println("  (unable to read cost data)")
+		return
+	}
+	costCfg := providers.CostConfig{
+		Enabled:         cfg.Cost.Enabled,
+		DailyLimitUSD:   cfg.Cost.DailyLimitUSD,
+		MonthlyLimitUSD: cfg.Cost.MonthlyLimitUSD,
+		WarnAtPercent:   cfg.Cost.WarnAtPercent,
+	}
+	ct, err := providers.NewCostTracker(costCfg, dataPath, nil)
+	if err != nil {
+		fmt.Println("  (unable to init cost tracker)")
+		return
+	}
+	summary := ct.GetSummary()
+
+	dailyPct := float64(0)
+	if summary.DailyLimitUSD > 0 {
+		dailyPct = summary.DailyCostUSD / summary.DailyLimitUSD * 100
+	}
+	monthlyPct := float64(0)
+	if summary.MonthlyLimitUSD > 0 {
+		monthlyPct = summary.MonthlyCostUSD / summary.MonthlyLimitUSD * 100
+	}
+
+	fmt.Printf("  Today:  $%.2f / $%.2f (%.1f%%)\n", summary.DailyCostUSD, summary.DailyLimitUSD, dailyPct)
+	fmt.Printf("  Month:  $%.2f / $%.2f (%.1f%%)\n", summary.MonthlyCostUSD, summary.MonthlyLimitUSD, monthlyPct)
+
+	if len(summary.ModelBreakdown) > 0 {
+		fmt.Println("  Top models:")
+		type modelCost struct {
+			name string
+			cost float64
+		}
+		var models []modelCost
+		for name, cost := range summary.ModelBreakdown {
+			models = append(models, modelCost{name, cost})
+		}
+		sort.Slice(models, func(i, j int) bool { return models[i].cost > models[j].cost })
+		total := summary.MonthlyCostUSD
+		if total == 0 {
+			total = 1 // 避免除零
+		}
+		for i, m := range models {
+			if i >= 5 {
+				break
+			}
+			fmt.Printf("    %-35s $%.2f (%.1f%%)\n", m.name, m.cost, m.cost/total*100)
+		}
 	}
 }

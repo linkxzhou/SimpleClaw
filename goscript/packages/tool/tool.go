@@ -13,13 +13,13 @@ import (
 	"go/importer"
 	"go/token"
 	"go/types"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/linkxzhou/SimpleClaw/goscript/packages/tool/pkgs"
-	"github.com/linkxzhou/SimpleClaw/utils"
 )
 
 var sourceDir string
@@ -32,10 +32,10 @@ func init() {
 //go:generate go run tool.go
 func main() {
 	for path, vlist := range pkgs.ImportPkgs {
-		utils.LogDebug("path: ", path, ", vlist: ", vlist)
+		slog.Debug("importing package", "path", path, "vlist", vlist)
 		err := packageImport(path, vlist)
 		if err != nil {
-			utils.LogDebug(path, err.Error())
+			slog.Debug("import failed", "path", path, "error", err.Error())
 			continue
 		}
 	}
@@ -93,7 +93,7 @@ func packageImport(path string, vlist []string) error {
 
 	builder := strings.Builder{}
 	pkgPath := trimVendor(pkg.Path())
-	utils.LogDebug("pkg.Path(): ", pkg.Path(), ", pkgPath: ", pkgPath)
+	slog.Debug("importing package", "pkg.Path()", pkg.Path(), "pkgPath", pkgPath)
 	preImports := strings.Builder{}
 	for _, v := range vlist {
 		preImports.WriteString(`"`)
@@ -144,7 +144,7 @@ func init() {
 		println(path, err.Error())
 	}
 
-	utils.LogDebug("pkg.Name(): ", pkg.Name())
+	slog.Debug("writing package file", "pkg.Name()", pkg.Name())
 	filename := fmt.Sprintf("%s%c%s.go", filepath.Dir(sourceDir), os.PathSeparator, pkg.Name())
 	return os.WriteFile(filename, code, 0666)
 }

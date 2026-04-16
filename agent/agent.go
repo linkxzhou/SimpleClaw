@@ -6,8 +6,12 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/linkxzhou/SimpleClaw/agent/tools"
+	"github.com/linkxzhou/SimpleClaw/memory"
+	"github.com/linkxzhou/SimpleClaw/providers"
+	"github.com/linkxzhou/SimpleClaw/utils"
 )
 
 // SessionStore 定义外部 session 存储接口（由 cmd 层注入实现）。
@@ -23,16 +27,19 @@ type StateUpdater func(channel, chatID string)
 
 // Agent 核心处理引擎
 type Agent struct {
-	bus           MessageBus
-	provider      LLMProvider
-	workspace     string
-	model         string
-	maxIterations int
-	braveAPIKey   string
+	bus             MessageBus
+	provider        LLMProvider
+	workspace       string
+	model           string
+	maxIterations   int
+	maxContextRunes int
+	maxTokens       int
+	braveAPIKey     string
 
 	contextBuilder *ContextBuilder
 	sessionStore   SessionStore
 	stateUpdater   StateUpdater
+	historyStore   *memory.HistoryStore // 对话历史（Dream 消费）
 	tools          *tools.Registry
 	subagents      *SubagentManager
 
@@ -42,14 +49,18 @@ type Agent struct {
 
 // AgentConfig Agent 配置
 type AgentConfig struct {
-	Bus           MessageBus
-	Provider      LLMProvider
-	Workspace     string
-	Model         string
-	MaxIterations int
-	BraveAPIKey   string
-	SessionStore  SessionStore  // 可选，nil 时使用内存回退
-	StateUpdater  StateUpdater  // 可选，nil 则不通知
+	Bus              MessageBus
+	Provider         LLMProvider
+	Workspace        string
+	Model            string
+	MaxIterations    int
+	MaxContextRunes  int              // 单条消息最大 rune 数（0=auto, -1=不限）
+	MaxTokens        int              // 最大生成 token 数（用于计算上下文预算）
+	BraveAPIKey      string
+	SessionStore     SessionStore         // 可选，nil 时使用内存回退
+	StateUpdater     StateUpdater         // 可选，nil 则不通知
+	ApprovalManager  *ApprovalManager     // 可选，nil 时不做审批
+	HistoryStore     *memory.HistoryStore // 可选，nil 时不记录对话历史
 }
 
 // NewAgent 创建 Agent 实例
@@ -67,44 +78,38 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 
 	a := &Agent{
-		bus:            cfg.Bus,
-		provider:       cfg.Provider,
-		workspace:      cfg.Workspace,
-		model:          cfg.Model,
-		maxIterations:  cfg.MaxIterations,
-		braveAPIKey:    cfg.BraveAPIKey,
-		contextBuilder: NewContextBuilder(cfg.Workspace),
-		sessionStore:   store,
-		stateUpdater:   cfg.StateUpdater,
-		tools:          tools.NewRegistry(),
+		bus:             cfg.Bus,
+		provider:        cfg.Provider,
+		workspace:       cfg.Workspace,
+		model:           cfg.Model,
+		maxIterations:   cfg.MaxIterations,
+		maxContextRunes: cfg.MaxContextRunes,
+		maxTokens:       cfg.MaxTokens,
+		braveAPIKey:     cfg.BraveAPIKey,
+		contextBuilder:  NewContextBuilder(cfg.Workspace),
+		sessionStore:    store,
+		stateUpdater:    cfg.StateUpdater,
+		historyStore:    cfg.HistoryStore,
+		tools:           tools.NewRegistry(),
 	}
 
 	a.subagents = NewSubagentManager(cfg.Provider, cfg.Workspace, cfg.Bus, cfg.Model, cfg.BraveAPIKey)
 	a.registerDefaultTools()
+
+	// 设置审批检查器
+	if cfg.ApprovalManager != nil {
+		a.tools.SetApprovalChecker(cfg.ApprovalManager.AsChecker())
+	}
 
 	return a
 }
 
 // registerDefaultTools 注册默认工具集
 func (a *Agent) registerDefaultTools() {
-	// 文件工具
-	a.tools.Register(&tools.ReadFileTool{})
-	a.tools.Register(&tools.WriteFileTool{})
-	a.tools.Register(&tools.EditFileTool{})
-	a.tools.Register(&tools.ListDirTool{})
+	// 注册主 Agent 与子 Agent 共用的通用工具
+	tools.RegisterCommonTools(a.tools, a.workspace, a.braveAPIKey)
 
-	// Shell 工具
-	a.tools.Register(tools.NewExecTool(a.workspace))
-
-	// Web 工具
-	a.tools.Register(tools.NewWebSearchTool(a.braveAPIKey))
-	a.tools.Register(tools.NewWebFetchTool())
-
-	// Go 动态执行工具
-	a.tools.Register(tools.NewGoRunTool())
-	a.tools.Register(tools.NewGoAgentTool())
-
-	// 消息工具
+	// 仅主 Agent 可用的工具（消息发送 + 子 Agent 生成）
 	messageTool := tools.NewMessageTool(func(msg tools.OutboundMessage) error {
 		return a.bus.PublishOutbound(OutboundMessage{
 			Channel: msg.Channel,
@@ -114,7 +119,6 @@ func (a *Agent) registerDefaultTools() {
 	})
 	a.tools.Register(messageTool)
 
-	// Spawn 工具
 	spawnTool := tools.NewSpawnTool(a.subagents)
 	a.tools.Register(spawnTool)
 }
@@ -153,15 +157,19 @@ func (a *Agent) Run(ctx context.Context) error {
 				response, err := a.processMessage(ctx, m)
 				if err != nil {
 					slog.Error("Error processing message", "sender", m.SenderID, "error", err)
-					_ = a.bus.PublishOutbound(OutboundMessage{
+					if pubErr := a.bus.PublishOutbound(OutboundMessage{
 						Channel: m.Channel,
 						ChatID:  m.ChatID,
 						Content: fmt.Sprintf("Sorry, I encountered an error: %s", err.Error()),
-					})
+					}); pubErr != nil {
+						slog.Error("Failed to publish error response", "channel", m.Channel, "error", pubErr)
+					}
 					return
 				}
 				if response != nil {
-					_ = a.bus.PublishOutbound(*response)
+					if pubErr := a.bus.PublishOutbound(*response); pubErr != nil {
+						slog.Error("Failed to publish response", "channel", m.Channel, "error", pubErr)
+					}
 				}
 			}(msg)
 		}
@@ -223,6 +231,9 @@ func (a *Agent) processMessage(ctx context.Context, msg InboundMessage) (*Outbou
 		msg.Media,
 	)
 
+	// 智能上下文截断：按 token 预算截断，防止上下文窗口溢出
+	messages = a.truncateIfNeeded(messages)
+
 	// Agent 循环
 	finalContent, err := a.agentLoop(ctx, messages)
 	if err != nil {
@@ -241,6 +252,19 @@ func (a *Agent) processMessage(ctx context.Context, msg InboundMessage) (*Outbou
 		history = history[len(history)-50:]
 	}
 	a.sessionStore.SaveSession(sessionKey, history)
+
+	// 异步记录对话历史（供 Dream 消费）
+	if a.historyStore != nil {
+		go func() {
+			a.historyStore.Append(memory.HistoryEntry{
+				Timestamp:  time.Now().Format(time.RFC3339),
+				SessionKey: sessionKey,
+				UserMsg:    truncStr(msg.Content, 500),
+				AssistMsg:  truncStr(finalContent, 500),
+				Summary:    truncStr(msg.Content+" → "+finalContent, 300),
+			})
+		}()
+	}
 
 	return &OutboundMessage{
 		Channel: msg.Channel,
@@ -271,6 +295,9 @@ func (a *Agent) processSystemMessage(ctx context.Context, msg InboundMessage) (*
 		nil,
 	)
 
+	// 智能上下文截断
+	messages = a.truncateIfNeeded(messages)
+
 	finalContent, err := a.agentLoop(ctx, messages)
 	if err != nil {
 		return nil, err
@@ -296,54 +323,70 @@ func (a *Agent) processSystemMessage(ctx context.Context, msg InboundMessage) (*
 
 // agentLoop 核心 ReAct 循环
 func (a *Agent) agentLoop(ctx context.Context, messages []Message) (string, error) {
-	toolDefs := convertToolDefs(a.tools.GetDefinitions())
+	return RunLoop(ctx, LoopConfig{
+		Provider:      a.provider,
+		Model:         a.model,
+		Registry:      a.tools,
+		MaxIterations: a.maxIterations,
+		Logger:        slog.Default(),
+	}, messages)
+}
 
-	for i := 0; i < a.maxIterations; i++ {
-		slog.Info("agentLoop iteration start", "iteration", i+1, "maxIterations", a.maxIterations)
-
-		response, err := a.provider.Chat(ctx, messages, toolDefs, a.model)
-		if err != nil {
-			return "", fmt.Errorf("LLM chat error: %w", err)
-		}
-
-		if !response.HasToolCalls {
-			contentPreview := response.Content
-			if len(contentPreview) > 200 {
-				contentPreview = contentPreview[:200] + "..."
+// truncateIfNeeded 按模型上下文窗口智能截断消息列表。
+// 同时对单条超长消息执行 rune 级截断（最后防线）。
+func (a *Agent) truncateIfNeeded(messages []Message) []Message {
+	// 1. 单条消息 rune 级截断（最后防线）
+	maxRunes := a.maxContextRunes
+	if maxRunes == 0 {
+		// auto: 按上下文窗口大小推算（约 4 char/token）
+		ctxWindow := providers.GetContextWindow(a.model)
+		maxRunes = ctxWindow * 4
+	}
+	if maxRunes > 0 { // -1 表示不限
+		for i := range messages {
+			if messages[i].Role == "system" {
+				continue // 不截断 system prompt
 			}
-			slog.Info("agentLoop final response", "iteration", i+1, "contentLength", len(response.Content), "preview", contentPreview)
-			return response.Content, nil
-		}
-
-		// 收集工具调用名称用于日志
-		toolNames := make([]string, 0, len(response.ToolCalls))
-		for _, tc := range response.ToolCalls {
-			toolNames = append(toolNames, tc.Name)
-		}
-		slog.Info("agentLoop tool calls", "iteration", i+1, "count", len(response.ToolCalls), "tools", strings.Join(toolNames, ", "))
-
-		// 添加 assistant 消息（包含 tool calls）
-		var toolCallEntries []ToolCallEntry
-		for _, tc := range response.ToolCalls {
-			toolCallEntries = append(toolCallEntries, ToolCallToEntry(tc))
-		}
-		messages = a.contextBuilder.AddAssistantMessage(messages, response.Content, toolCallEntries)
-
-		// 执行工具
-		for _, tc := range response.ToolCalls {
-			slog.Info("agentLoop executing tool", "iteration", i+1, "tool", tc.Name, "args", MarshalToolCallArgs(tc.Arguments))
-			result := a.tools.Execute(ctx, tc.Name, tc.Arguments)
-			resultPreview := result
-			if len(resultPreview) > 300 {
-				resultPreview = resultPreview[:300] + "..."
-			}
-			slog.Info("agentLoop tool result", "iteration", i+1, "tool", tc.Name, "resultLength", len(result), "preview", resultPreview)
-			messages = a.contextBuilder.AddToolResult(messages, tc.ID, tc.Name, result)
+			messages[i].Content = utils.TruncateContent(messages[i].Content, maxRunes)
 		}
 	}
 
-	slog.Warn("agentLoop reached max iterations", "maxIterations", a.maxIterations)
-	return "I've reached the maximum number of iterations.", nil
+	// 2. 计算 token 预算
+	contextWindow := providers.GetContextWindow(a.model)
+	maxCompletion := a.maxTokens
+	if maxCompletion <= 0 {
+		maxCompletion = 8192
+	}
+	safetyBuffer := 1000
+	budget := contextWindow - maxCompletion - safetyBuffer
+	if budget <= 0 {
+		return messages // 无法截断
+	}
+
+	// 3. 转换为截断算法的消息格式
+	truncMsgs := make([]memory.TruncMessage, len(messages))
+	for i, m := range messages {
+		truncMsgs[i] = memory.TruncMessage{Role: m.Role, Content: m.Content}
+	}
+
+	// 4. 执行截断
+	truncated, archivedCount := memory.TruncateMessages(truncMsgs, budget)
+	if archivedCount > 0 {
+		slog.Info("Context truncated",
+			"archived", archivedCount,
+			"before", len(messages),
+			"after", len(truncated),
+			"model", a.model,
+			"budget", budget,
+		)
+	}
+
+	// 5. 转换回 Message 格式
+	result := make([]Message, len(truncated))
+	for i, tm := range truncated {
+		result[i] = Message{Role: tm.Role, Content: tm.Content}
+	}
+	return result
 }
 
 // updateToolContexts 更新工具的上下文信息
@@ -404,4 +447,12 @@ func (s *memorySessionStore) SaveSession(key string, messages []Message) {
 	cp := make([]Message, len(messages))
 	copy(cp, messages)
 	s.sessions[key] = cp
+}
+
+// truncStr 截断字符串到指定长度。
+func truncStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

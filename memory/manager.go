@@ -168,7 +168,7 @@ func (m *SessionManager) load(key string) *Session {
 	}
 	defer f.Close()
 
-	var messages []map[string]interface{}
+	var messages []SessionMessage
 	var metadata map[string]interface{}
 	var createdAt time.Time
 
@@ -193,7 +193,16 @@ func (m *SessionManager) load(key string) *Session {
 				}
 			}
 		} else {
-			messages = append(messages, data)
+			role, _ := data["role"].(string)
+			content, _ := data["content"].(string)
+			ts, _ := data["timestamp"].(string)
+			if role != "" {
+				messages = append(messages, SessionMessage{
+					Role:      role,
+					Content:   content,
+					Timestamp: ts,
+				})
+			}
 		}
 	}
 

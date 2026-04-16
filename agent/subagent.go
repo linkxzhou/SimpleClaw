@@ -85,17 +85,7 @@ func (m *SubagentManager) runSubagent(
 
 	// 构建子 Agent 的工具注册（无 message 和 spawn 工具，防止递归）
 	registry := tools.NewRegistry()
-	registry.Register(&tools.ReadFileTool{})
-	registry.Register(&tools.WriteFileTool{})
-	registry.Register(&tools.EditFileTool{})
-	registry.Register(&tools.ListDirTool{})
-	registry.Register(tools.NewExecTool(m.workspace))
-	registry.Register(tools.NewWebSearchTool(m.braveAPIKey))
-	registry.Register(tools.NewWebFetchTool())
-
-	// Go 动态执行工具
-	registry.Register(tools.NewGoRunTool())
-	registry.Register(tools.NewGoAgentTool())
+	tools.RegisterCommonTools(registry, m.workspace, m.braveAPIKey)
 
 	// 构建子 Agent 专用 system prompt
 	systemPrompt := m.buildSubagentPrompt(task)
@@ -104,47 +94,20 @@ func (m *SubagentManager) runSubagent(
 		{Role: "user", Content: task},
 	}
 
-	toolDefs := convertToolDefs(registry.GetDefinitions())
+	// 使用公共 RunLoop（子 Agent 用 Debug 级日志）
+	subLogger := slog.Default().With("subagent", taskID)
+	finalResult, err := RunLoop(ctx, LoopConfig{
+		Provider:      m.provider,
+		Model:         m.model,
+		Registry:      registry,
+		MaxIterations: 15,
+		Logger:        subLogger,
+	}, messages)
 
-	// Agent 循环（限制迭代次数）
-	maxIterations := 15
-	var finalResult string
-
-	for i := 0; i < maxIterations; i++ {
-		response, err := m.provider.Chat(ctx, messages, toolDefs, m.model)
-		if err != nil {
-			slog.Error("Subagent LLM error", "task_id", taskID, "error", err)
-			m.announceResult(taskID, label, task, fmt.Sprintf("Error: %s", err.Error()), originChannel, originChatID, "error")
-			return
-		}
-
-		if response.HasToolCalls {
-			// 添加 assistant 消息（包含 tool calls）
-			var toolCallEntries []ToolCallEntry
-			for _, tc := range response.ToolCalls {
-				toolCallEntries = append(toolCallEntries, ToolCallToEntry(tc))
-			}
-			messages = append(messages, Message{
-				Role:      "assistant",
-				Content:   response.Content,
-				ToolCalls: toolCallEntries,
-			})
-
-			// 执行工具
-			for _, tc := range response.ToolCalls {
-				slog.Debug("Subagent executing tool", "task_id", taskID, "tool", tc.Name)
-				result := registry.Execute(ctx, tc.Name, tc.Arguments)
-				messages = append(messages, Message{
-					Role:       "tool",
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-					Content:    result,
-				})
-			}
-		} else {
-			finalResult = response.Content
-			break
-		}
+	if err != nil {
+		slog.Error("Subagent LLM error", "task_id", taskID, "error", err)
+		m.announceResult(taskID, label, task, fmt.Sprintf("Error: %s", err.Error()), originChannel, originChatID, "error")
+		return
 	}
 
 	if finalResult == "" {

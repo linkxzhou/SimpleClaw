@@ -34,6 +34,10 @@ func main() {
 		cmdChannels(args)
 	case "status":
 		cmdStatus(args)
+	case "sop":
+		cmdSop(args)
+	case "pairing":
+		cmdPairing(args)
 	case "--version", "-v", "version":
 		fmt.Printf("%s SimpleClaw v%s\n", logo, version)
 	case "--help", "-h", "help":
@@ -59,6 +63,8 @@ Commands:
   cron        管理定时任务（list、add、remove、enable、run）
   channels    管理聊天渠道（status、login）
   status      显示系统状态
+  sop         管理 SOP 标准操作流程（list、run）
+  pairing     管理配对认证（list、approve、revoke、add）
 
 Options:
   -v, --version   显示版本号

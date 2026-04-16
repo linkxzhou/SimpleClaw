@@ -7,23 +7,18 @@ package bus
 import (
 	"context"
 	"log/slog"
-	"sync"
 )
-
-// OutboundHandler 是出站消息的回调处理函数。
-type OutboundHandler func(msg OutboundMessage) error
 
 // MessageBus 是异步消息队列，解耦聊天渠道与 Agent 核心。
 type MessageBus struct {
 	inbound  chan InboundMessage  // 入站消息队列
 	outbound chan OutboundMessage // 出站消息队列
 
-	mu          sync.RWMutex                    // 保护 subscribers 的并发访问
-	subscribers map[string][]OutboundHandler     // 出站消息订阅者（按渠道名索引）
+	middleware *MiddlewareChain // 中间件链
+	events     *EventBus        // 事件总线
 
-	done    chan struct{}  // 停止信号
-	running bool          // 分发器运行状态
-	logger  *slog.Logger  // 日志记录器
+	done   chan struct{} // 停止信号
+	logger *slog.Logger // 日志记录器
 }
 
 // NewMessageBus 创建一个新的消息总线。
@@ -36,23 +31,42 @@ func NewMessageBus(bufSize int, logger *slog.Logger) *MessageBus {
 		logger = slog.Default()
 	}
 	return &MessageBus{
-		inbound:     make(chan InboundMessage, bufSize),
-		outbound:    make(chan OutboundMessage, bufSize),
-		subscribers: make(map[string][]OutboundHandler),
-		done:        make(chan struct{}),
-		logger:      logger,
+		inbound:    make(chan InboundMessage, bufSize),
+		outbound:   make(chan OutboundMessage, bufSize),
+		middleware:  NewMiddlewareChain(),
+		events:     NewEventBus(),
+		done:       make(chan struct{}),
+		logger:     logger,
 	}
 }
 
+// Middleware 返回中间件链（用于外部注册中间件）。
+func (b *MessageBus) Middleware() *MiddlewareChain { return b.middleware }
+
+// Events 返回事件总线（用于外部注册事件处理器）。
+func (b *MessageBus) Events() *EventBus { return b.events }
+
 // PublishInbound 将来自渠道的消息发布到入站队列。
+// 先经过中间件链处理，被中间件丢弃则不入队。
 // 队列满时丢弃消息并返回 ErrQueueFull。
 func (b *MessageBus) PublishInbound(msg InboundMessage) error {
+	// 运行入站中间件
+	processed := b.middleware.RunInbound(&msg)
+	if processed == nil {
+		return nil // 消息被中间件丢弃
+	}
+
+	// 发射事件
+	b.events.Emit(EventMessageInbound, map[string]interface{}{
+		"channel": processed.Channel, "sender": processed.SenderID,
+	})
+
 	select {
-	case b.inbound <- msg:
+	case b.inbound <- *processed:
 		return nil
 	default:
 		b.logger.Warn("inbound queue full, dropping message",
-			"channel", msg.Channel, "chat_id", msg.ChatID)
+			"channel", processed.Channel, "chat_id", processed.ChatID)
 		return ErrQueueFull
 	}
 }
@@ -68,14 +82,26 @@ func (b *MessageBus) ConsumeInbound(ctx context.Context) (InboundMessage, error)
 }
 
 // PublishOutbound 将 Agent 的响应发布到出站队列。
+// 先经过出站中间件链处理，被中间件丢弃则不入队。
 // 队列满时丢弃消息并返回 ErrQueueFull。
 func (b *MessageBus) PublishOutbound(msg OutboundMessage) error {
+	// 运行出站中间件
+	processed := b.middleware.RunOutbound(&msg)
+	if processed == nil {
+		return nil
+	}
+
+	// 发射事件
+	b.events.Emit(EventMessageOutbound, map[string]interface{}{
+		"channel": processed.Channel, "content_length": len(processed.Content),
+	})
+
 	select {
-	case b.outbound <- msg:
+	case b.outbound <- *processed:
 		return nil
 	default:
 		b.logger.Warn("outbound queue full, dropping message",
-			"channel", msg.Channel, "chat_id", msg.ChatID)
+			"channel", processed.Channel, "chat_id", processed.ChatID)
 		return ErrQueueFull
 	}
 }
@@ -90,42 +116,7 @@ func (b *MessageBus) ConsumeOutbound(ctx context.Context) (OutboundMessage, erro
 	}
 }
 
-// SubscribeOutbound 为指定渠道注册出站消息处理器。
-func (b *MessageBus) SubscribeOutbound(channel string, handler OutboundHandler) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.subscribers[channel] = append(b.subscribers[channel], handler)
-}
-
-// DispatchOutbound 启动出站消息分发循环。
-// 从出站队列消费消息并分发给对应渠道的订阅者。
-// 阻塞直到 Stop() 被调用或上下文取消。
-func (b *MessageBus) DispatchOutbound(ctx context.Context) {
-	b.running = true
-	defer func() { b.running = false }()
-
-	for {
-		select {
-		case msg := <-b.outbound:
-			b.mu.RLock()
-			handlers := b.subscribers[msg.Channel]
-			b.mu.RUnlock()
-
-			for _, h := range handlers {
-				if err := h(msg); err != nil {
-					b.logger.Error("dispatch outbound error",
-						"channel", msg.Channel, "error", err)
-				}
-			}
-		case <-ctx.Done():
-			return
-		case <-b.done:
-			return
-		}
-	}
-}
-
-// Stop 停止分发循环。
+// Stop 停止消息总线。
 func (b *MessageBus) Stop() {
 	select {
 	case b.done <- struct{}{}:

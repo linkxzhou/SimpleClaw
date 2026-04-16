@@ -12,10 +12,11 @@ import (
 	"go/types"
 	"os"
 
+	"log/slog"
+
 	"github.com/linkxzhou/SimpleClaw/goscript/internal/importer"
 	"github.com/linkxzhou/SimpleClaw/goscript/internal/value"
 	_ "github.com/linkxzhou/SimpleClaw/goscript/packages"
-	"github.com/linkxzhou/SimpleClaw/utils"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -34,7 +35,7 @@ func ParseFunctions(source string, exportedOnly bool) ([]string, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", source, parser.AllErrors)
 	if err != nil {
-		utils.LogError("ParseFile failed for source")
+		slog.Error("ParseFile failed for source")
 		return nil, err
 	}
 

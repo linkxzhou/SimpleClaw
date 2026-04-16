@@ -145,7 +145,12 @@ func cronAdd(args []string) {
 		case "-e", "--every":
 			if i+1 < len(args) {
 				i++
-				every, _ = strconv.Atoi(args[i])
+				var err error
+				every, err = strconv.Atoi(args[i])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[ERROR] Invalid --every value: %s\n", args[i])
+					os.Exit(1)
+				}
 			}
 		case "-c", "--cron":
 			if i+1 < len(args) {

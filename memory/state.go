@@ -6,6 +6,7 @@ package memory
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -66,7 +67,9 @@ func (m *StateManager) load() {
 	if err != nil {
 		return // 文件不存在或读取失败，使用零值
 	}
-	_ = json.Unmarshal(data, &m.state)
+	if err := json.Unmarshal(data, &m.state); err != nil {
+		slog.Warn("state: failed to parse state file", "path", m.filePath, "error", err)
+	}
 }
 
 // save 原子保存状态到磁盘（temp file + rename）。
@@ -81,12 +84,18 @@ func (m *StateManager) save() {
 
 	// 确保目录存在
 	dir := filepath.Dir(m.filePath)
-	_ = os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		slog.Warn("state: failed to create dir", "dir", dir, "error", err)
+		return
+	}
 
 	// 原子写入：先写 temp 文件，再 rename
 	tmpPath := m.filePath + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		slog.Warn("state: failed to write temp file", "error", err)
 		return
 	}
-	_ = os.Rename(tmpPath, m.filePath)
+	if err := os.Rename(tmpPath, m.filePath); err != nil {
+		slog.Warn("state: failed to rename state file", "error", err)
+	}
 }

@@ -8,13 +8,6 @@ echo "==> Syncing skills to workspace..."
 cp -r agent/skills .simpleclaw/workspace/skills
 echo "    Copied agent/skills/ -> .simpleclaw/workspace/skills/"
 
-echo "==> Building frontend..."
-cd frontend
-yarn install
-yarn build
-cd ..
-echo "    Frontend built -> frontend/dist/"
-
 echo "==> Generating goscript package bindings..."
 cd goscript/packages/tool && go run tool.go
 cd - > /dev/null

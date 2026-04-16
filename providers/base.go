@@ -36,11 +36,48 @@ type LLMProvider interface {
 	GetDefaultModel() string
 }
 
-// ChatRequest 包含聊天补全请求的参数。
+// ============ 强类型消息与工具定义 ============
+
+// ChatMessage 聊天消息（强类型，取代 map[string]interface{}）
+type ChatMessage struct {
+	Role       string              `json:"role"`
+	Content    string              `json:"content"`
+	ToolCalls  []ChatToolCallEntry `json:"tool_calls,omitempty"`
+	ToolCallID string              `json:"tool_call_id,omitempty"`
+	Name       string              `json:"name,omitempty"`
+}
+
+// ChatToolCallEntry 工具调用条目（OpenAI 格式）
+type ChatToolCallEntry struct {
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Function ChatToolCallFunction `json:"function"`
+}
+
+// ChatToolCallFunction 工具调用函数信息
+type ChatToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ChatToolDef 工具定义（OpenAI function calling 格式）
+type ChatToolDef struct {
+	Type     string           `json:"type"`
+	Function ChatToolFunction `json:"function"`
+}
+
+// ChatToolFunction 工具函数定义
+type ChatToolFunction struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Parameters  interface{} `json:"parameters"`
+}
+
+// ChatRequest 包含聊天补全请求的参数（强类型版本）。
 type ChatRequest struct {
-	Messages    []map[string]interface{} `json:"messages"`              // 消息列表
-	Tools       []map[string]interface{} `json:"tools,omitempty"`       // 工具定义列表（可选）
-	Model       string                   `json:"model,omitempty"`       // 模型名称（可选，为空则使用默认值）
-	MaxTokens   int                      `json:"max_tokens,omitempty"`  // 最大生成 token 数（可选）
-	Temperature float64                  `json:"temperature,omitempty"` // 采样温度（可选）
+	Messages    []ChatMessage `json:"messages"`              // 消息列表（强类型）
+	Tools       []ChatToolDef `json:"tools,omitempty"`       // 工具定义列表（强类型）
+	Model       string        `json:"model,omitempty"`       // 模型名称
+	MaxTokens   int           `json:"max_tokens,omitempty"`  // 最大生成 token 数
+	Temperature float64       `json:"temperature,omitempty"` // 采样温度
 }

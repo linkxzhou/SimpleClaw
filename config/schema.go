@@ -11,13 +11,15 @@ import (
 
 // Config 是 SimpleClaw 的根配置结构体。
 type Config struct {
-	Agents    AgentsConfig    `json:"agents"`              // Agent 相关配置
-	Bindings  []BindingConfig `json:"bindings,omitempty"`  // 多 Agent 路由绑定
-	Channels  ChannelsConfig  `json:"channels"`            // 聊天渠道配置
-	Providers ProvidersConfig `json:"providers"`           // LLM 提供商配置
-	Gateway   GatewayConfig   `json:"gateway"`             // 网关/服务器配置
-	Tools     ToolsConfig     `json:"tools"`               // 工具配置
-	Heartbeat HeartbeatConfig `json:"heartbeat"`           // 心跳配置
+	Agents    AgentsConfig      `json:"agents"`              // Agent 相关配置
+	Bindings  []BindingConfig   `json:"bindings,omitempty"`  // 多 Agent 路由绑定
+	Channels  ChannelsConfig    `json:"channels"`            // 聊天渠道配置
+	Providers ProvidersConfig   `json:"providers"`           // LLM 提供商配置
+	Gateway   GatewayConfig     `json:"gateway"`             // 网关/服务器配置
+	Tools     ToolsConfig       `json:"tools"`               // 工具配置
+	Heartbeat HeartbeatConfig   `json:"heartbeat"`           // 心跳配置
+	Cost      CostTrackerConfig `json:"cost"`                // 成本追踪配置
+	Approval  ApprovalConfig    `json:"approval"`            // 审批网关配置
 }
 
 // DefaultConfig 返回带有合理默认值的配置。
@@ -29,6 +31,8 @@ func DefaultConfig() *Config {
 		Gateway:   GatewayConfig{Host: "0.0.0.0", Port: 18790},
 		Tools:     defaultToolsConfig(),
 		Heartbeat: HeartbeatConfig{Enabled: true, IntervalMin: 30},
+		Cost:      defaultCostTrackerConfig(),
+		Approval:  defaultApprovalConfig(),
 	}
 }
 
@@ -37,21 +41,40 @@ func (c *Config) WorkspacePath() string {
 	return utils.ExpandHome(c.Agents.Defaults.Workspace)
 }
 
+// All 返回所有 Provider 配置的 vendor -> ProviderConfig 映射。
+// 新增 Provider 只需在此处添加一行。
+func (p *ProvidersConfig) All() map[string]ProviderConfig {
+	return map[string]ProviderConfig{
+		"anthropic":  p.Anthropic,
+		"openai":     p.OpenAI,
+		"openrouter": p.OpenRouter,
+		"groq":       p.Groq,
+		"zhipu":      p.Zhipu,
+		"vllm":       p.VLLM,
+		"gemini":     p.Gemini,
+		"deepseek":   p.DeepSeek,
+	}
+}
+
 // GetAPIKey 按优先级返回第一个非空的 API Key。
+// 注意：此方法保持显式优先级顺序（agents.defaults > openrouter > anthropic > ...）。
 func (c *Config) GetAPIKey() string {
-	for _, key := range []string{
-		c.Agents.Defaults.APIKey,
-		c.Providers.OpenRouter.APIKey,
-		c.Providers.Anthropic.APIKey,
-		c.Providers.OpenAI.APIKey,
-		c.Providers.Gemini.APIKey,
-		c.Providers.Zhipu.APIKey,
-		c.Providers.Groq.APIKey,
-		c.Providers.DeepSeek.APIKey,
-		c.Providers.VLLM.APIKey,
+	if c.Agents.Defaults.APIKey != "" {
+		return c.Agents.Defaults.APIKey
+	}
+	// 按优先级排列的 provider 列表
+	for _, pc := range []ProviderConfig{
+		c.Providers.OpenRouter,
+		c.Providers.Anthropic,
+		c.Providers.OpenAI,
+		c.Providers.Gemini,
+		c.Providers.Zhipu,
+		c.Providers.Groq,
+		c.Providers.DeepSeek,
+		c.Providers.VLLM,
 	} {
-		if key != "" {
-			return key
+		if pc.APIKey != "" {
+			return pc.APIKey
 		}
 	}
 	return ""
@@ -80,29 +103,10 @@ func (c *Config) GetAPIBase() string {
 // GetAPIKeys 返回所有已配置的 vendor -> apiKey 映射（用于 ProviderFactory）。
 func (c *Config) GetAPIKeys() map[string]string {
 	keys := make(map[string]string)
-	if c.Providers.OpenRouter.APIKey != "" {
-		keys["openrouter"] = c.Providers.OpenRouter.APIKey
-	}
-	if c.Providers.Anthropic.APIKey != "" {
-		keys["anthropic"] = c.Providers.Anthropic.APIKey
-	}
-	if c.Providers.OpenAI.APIKey != "" {
-		keys["openai"] = c.Providers.OpenAI.APIKey
-	}
-	if c.Providers.Gemini.APIKey != "" {
-		keys["gemini"] = c.Providers.Gemini.APIKey
-	}
-	if c.Providers.Zhipu.APIKey != "" {
-		keys["zhipu"] = c.Providers.Zhipu.APIKey
-	}
-	if c.Providers.Groq.APIKey != "" {
-		keys["groq"] = c.Providers.Groq.APIKey
-	}
-	if c.Providers.DeepSeek.APIKey != "" {
-		keys["deepseek"] = c.Providers.DeepSeek.APIKey
-	}
-	if c.Providers.VLLM.APIKey != "" {
-		keys["vllm"] = c.Providers.VLLM.APIKey
+	for vendor, pc := range c.Providers.All() {
+		if pc.APIKey != "" {
+			keys[vendor] = pc.APIKey
+		}
 	}
 	// 如果有 agents.defaults 的 apiKey，用于默认 vendor
 	if c.Agents.Defaults.APIKey != "" {
@@ -118,24 +122,9 @@ func (c *Config) GetAPIKeys() map[string]string {
 // 优先使用各 provider 的 apiBase，其次使用 agents.defaults.apiBase 作为全局回退。
 func (c *Config) GetEndpoints() map[string]string {
 	eps := make(map[string]string)
-
-	// 收集各 vendor 的自定义 endpoint
-	vendorBases := []struct {
-		vendor string
-		base   string
-	}{
-		{"openai", c.Providers.OpenAI.APIBase},
-		{"anthropic", c.Providers.Anthropic.APIBase},
-		{"openrouter", c.Providers.OpenRouter.APIBase},
-		{"groq", c.Providers.Groq.APIBase},
-		{"zhipu", c.Providers.Zhipu.APIBase},
-		{"gemini", c.Providers.Gemini.APIBase},
-		{"deepseek", c.Providers.DeepSeek.APIBase},
-		{"vllm", c.Providers.VLLM.APIBase},
-	}
-	for _, v := range vendorBases {
-		if v.base != "" {
-			eps[v.vendor] = v.base
+	for vendor, pc := range c.Providers.All() {
+		if pc.APIBase != "" {
+			eps[vendor] = pc.APIBase
 		}
 	}
 
@@ -178,8 +167,9 @@ type AgentDefaults struct {
 	Temperature        float64 `json:"temperature"`                      // 采样温度（0-1）
 	MaxToolIterations  int     `json:"maxToolIterations"`                // 工具调用最大迭代次数
 	RestrictToWorkspace bool   `json:"restrictToWorkspace,omitempty"`    // 限制文件操作在工作区内
-	APIBase            string  `json:"apiBase,omitempty"`                // API 基础 URL
-	APIKey             string  `json:"apiKey,omitempty"`                 // API 密钥
+	MaxContextRunes    int    `json:"maxContextRunes,omitempty"`        // 单条消息最大 rune 数（0=auto, -1=不限）
+	APIBase            string `json:"apiBase,omitempty"`                // API 基础 URL
+	APIKey             string `json:"apiKey,omitempty"`                 // API 密钥
 }
 
 // AgentConfig 单个 Agent 的配置。
@@ -301,6 +291,42 @@ type GatewayConfig struct {
 type HeartbeatConfig struct {
 	Enabled     bool `json:"enabled"`
 	IntervalMin int  `json:"intervalMin"` // 间隔（分钟）
+}
+
+// ============ 成本追踪 ============
+
+// CostTrackerConfig 成本追踪配置。
+type CostTrackerConfig struct {
+	Enabled         bool    `json:"enabled"`                  // 是否启用成本追踪
+	DailyLimitUSD   float64 `json:"dailyLimitUsd,omitempty"`  // 日限额（美元），默认 10.0
+	MonthlyLimitUSD float64 `json:"monthlyLimitUsd,omitempty"` // 月限额（美元），默认 100.0
+	WarnAtPercent   int     `json:"warnAtPercent,omitempty"`  // 预警百分比，默认 80
+}
+
+func defaultCostTrackerConfig() CostTrackerConfig {
+	return CostTrackerConfig{
+		Enabled:         false,
+		DailyLimitUSD:   10.0,
+		MonthlyLimitUSD: 100.0,
+		WarnAtPercent:   80,
+	}
+}
+
+// ============ 审批网关 ============
+
+// ApprovalConfig 审批网关配置。
+type ApprovalConfig struct {
+	Level       string   `json:"level"`                 // "full"（默认）/ "supervised" / "read_only"
+	AutoApprove []string `json:"autoApprove,omitempty"`  // 免确认工具列表
+	AlwaysAsk   []string `json:"alwaysAsk,omitempty"`    // 强制确认工具列表
+}
+
+func defaultApprovalConfig() ApprovalConfig {
+	return ApprovalConfig{
+		Level:       "full",
+		AutoApprove: []string{"read_file", "list_dir", "web_search", "web_fetch"},
+		AlwaysAsk:   []string{"exec"},
+	}
 }
 
 // ============ 工具 ============

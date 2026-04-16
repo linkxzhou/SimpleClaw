@@ -16,6 +16,10 @@ type SkillsLoader struct {
 	workspace       string
 	workspaceSkills string
 	builtinSkills   string
+
+	// 缓存：避免同一 skill 被重复读取文件
+	metaCache    map[string]*SkillMetadata // name -> parsed metadata
+	contentCache map[string]string         // name -> raw file content
 }
 
 // SkillInfo 技能信息
@@ -45,6 +49,8 @@ func NewSkillsLoader(workspace string, builtinSkillsDir string) *SkillsLoader {
 		workspace:       workspace,
 		workspaceSkills: filepath.Join(workspace, "skills"),
 		builtinSkills:   builtinSkillsDir,
+		metaCache:       make(map[string]*SkillMetadata),
+		contentCache:    make(map[string]string),
 	}
 }
 
@@ -105,23 +111,27 @@ func (s *SkillsLoader) ListSkills(filterUnavailable bool) []SkillInfo {
 	return skills
 }
 
-// LoadSkill 按名称加载技能内容
+// LoadSkill 按名称加载技能内容（带缓存）
 func (s *SkillsLoader) LoadSkill(name string) string {
-	// 先检查 workspace
-	path := filepath.Join(s.workspaceSkills, name, "SKILL.md")
-	if content, err := os.ReadFile(path); err == nil {
-		return string(content)
+	if cached, ok := s.contentCache[name]; ok {
+		return cached
 	}
 
-	// 再检查 builtin
-	if s.builtinSkills != "" {
+	var content string
+	// 先检查 workspace
+	path := filepath.Join(s.workspaceSkills, name, "SKILL.md")
+	if data, err := os.ReadFile(path); err == nil {
+		content = string(data)
+	} else if s.builtinSkills != "" {
+		// 再检查 builtin
 		path = filepath.Join(s.builtinSkills, name, "SKILL.md")
-		if content, err := os.ReadFile(path); err == nil {
-			return string(content)
+		if data, err := os.ReadFile(path); err == nil {
+			content = string(data)
 		}
 	}
 
-	return ""
+	s.contentCache[name] = content
+	return content
 }
 
 // LoadSkillsForContext 加载指定技能用于 Agent 上下文
@@ -172,50 +182,55 @@ func (s *SkillsLoader) BuildSkillsSummary() string {
 
 // GetAlwaysSkills 获取标记为 always 的技能
 func (s *SkillsLoader) GetAlwaysSkills() []string {
+	seen := make(map[string]bool)
 	var result []string
+
 	for _, skill := range s.ListSkills(true) {
 		meta := s.GetSkillMetadata(skill.Name)
 		if meta == nil {
 			continue
 		}
-		skillMeta := s.getSkillMeta(skill.Name)
-		if skillMeta.Bins != nil || meta.Always {
-			result = append(result, skill.Name)
-		}
-		// 检查 nanobot metadata 中的 always 字段
-		nbMeta := s.parseNanobotMetadata(meta.Metadata)
-		if alwaysVal, ok := nbMeta["always"]; ok {
-			if b, ok := alwaysVal.(bool); ok && b {
-				result = append(result, skill.Name)
+
+		isAlways := meta.Always
+		if !isAlways {
+			// 检查 nanobot metadata 中的 always 字段
+			nbMeta := s.parseNanobotMetadata(meta.Metadata)
+			if alwaysVal, ok := nbMeta["always"]; ok {
+				if b, ok := alwaysVal.(bool); ok && b {
+					isAlways = true
+				}
 			}
 		}
-	}
-	// 去重
-	seen := make(map[string]bool)
-	var unique []string
-	for _, name := range result {
-		if !seen[name] {
-			seen[name] = true
-			unique = append(unique, name)
+
+		if isAlways && !seen[skill.Name] {
+			seen[skill.Name] = true
+			result = append(result, skill.Name)
 		}
 	}
-	return unique
+	return result
 }
 
-// GetSkillMetadata 从技能的 frontmatter 中获取元数据
+// GetSkillMetadata 从技能的 frontmatter 中获取元数据（带缓存）
 func (s *SkillsLoader) GetSkillMetadata(name string) *SkillMetadata {
+	if cached, ok := s.metaCache[name]; ok {
+		return cached
+	}
+
 	content := s.LoadSkill(name)
 	if content == "" {
+		s.metaCache[name] = nil
 		return nil
 	}
 
 	if !strings.HasPrefix(content, "---") {
+		s.metaCache[name] = nil
 		return nil
 	}
 
 	re := regexp.MustCompile(`(?s)^---\n(.*?)\n---`)
 	match := re.FindStringSubmatch(content)
 	if len(match) < 2 {
+		s.metaCache[name] = nil
 		return nil
 	}
 
@@ -238,6 +253,7 @@ func (s *SkillsLoader) GetSkillMetadata(name string) *SkillMetadata {
 			}
 		}
 	}
+	s.metaCache[name] = meta
 	return meta
 }
 

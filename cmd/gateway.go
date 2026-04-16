@@ -82,13 +82,33 @@ func cmdGateway(args []string) {
 	}
 
 	// 创建 Agent
+	// TODO(plan3): 当前为单 Agent 模式，所有消息直接发给唯一 Agent 实例。
+	// 多 Agent 路由已在 routing/ 包中实现（7 级优先级级联），待 plan3 接入。
+	// 届时需读取 cfg.Bindings 并创建 routing.RouteResolver，按路由结果分发消息。
+	// 对话历史存储（供 Dream 消费）
+	memoryDir := filepath.Join(workspace, "memory")
+	historyStore, _ := memory.NewHistoryStore(memoryDir)
+
+	// 审批管理器（渠道 = 非交互式）
+	approvalCfg := agent.ApprovalConfig{
+		Level:       agent.AutonomyLevel(cfg.Approval.Level),
+		AutoApprove: cfg.Approval.AutoApprove,
+		AlwaysAsk:   cfg.Approval.AlwaysAsk,
+	}
+	auditPath := filepath.Join(dataPath, "audit.jsonl")
+	approvalMgr := agent.NewNonInteractiveManager(approvalCfg, auditPath, logger)
+
 	agentCfg := agent.AgentConfig{
-		Bus:           NewBusAdapter(msgBus),
-		Provider:      providerLLM,
-		Workspace:     workspace,
-		Model:         primaryModel,
-		MaxIterations: cfg.Agents.Defaults.MaxToolIterations,
-		BraveAPIKey:   cfg.Tools.Web.Search.APIKey,
+		Bus:             NewBusAdapter(msgBus),
+		Provider:        providerLLM,
+		Workspace:       workspace,
+		Model:           primaryModel,
+		MaxIterations:   cfg.Agents.Defaults.MaxToolIterations,
+		MaxContextRunes: cfg.Agents.Defaults.MaxContextRunes,
+		MaxTokens:       cfg.Agents.Defaults.MaxTokens,
+		BraveAPIKey:     cfg.Tools.Web.Search.APIKey,
+		HistoryStore:    historyStore,
+		ApprovalManager: approvalMgr,
 		StateUpdater: func(channel, chatID string) {
 			stateMgr.Update(channel, chatID)
 		},
@@ -111,11 +131,13 @@ func cmdGateway(args []string) {
 			if ch == "" {
 				ch = "whatsapp"
 			}
-			_ = msgBus.PublishOutbound(bus.OutboundMessage{
+			if pubErr := msgBus.PublishOutbound(bus.OutboundMessage{
 				Channel: ch,
 				ChatID:  job.Payload.To,
 				Content: response,
-			})
+			}); pubErr != nil {
+				logger.Error("cron: failed to publish outbound", "job", job.ID, "error", pubErr)
+			}
 		}
 		return response, nil
 	}
@@ -139,10 +161,6 @@ func cmdGateway(args []string) {
 	// 创建 Health Server
 	healthSvr := health.NewServer(cfg.Gateway.Host, cfg.Gateway.Port, logger)
 
-	// 创建 API Server 并注册路由
-	apiSvr := NewAPIServer(agentInstance, sessionMgr, cronSvc, channelMgr, msgBus, cfg, logger)
-	apiSvr.RegisterRoutes(healthSvr)
-
 	// 打印启动信息
 	enabledChannels := channelMgr.EnabledChannels()
 	if len(enabledChannels) > 0 {
@@ -159,8 +177,6 @@ func cmdGateway(args []string) {
 		fmt.Printf("  ✓ Heartbeat: every %dm\n", cfg.Heartbeat.IntervalMin)
 	}
 	fmt.Printf("  ✓ Health: http://%s:%d/health\n", cfg.Gateway.Host, cfg.Gateway.Port)
-	fmt.Printf("  ✓ API:    http://%s:%d/api/rpc\n", cfg.Gateway.Host, cfg.Gateway.Port)
-	fmt.Printf("  ✓ Web UI: http://%s:%d/\n", cfg.Gateway.Host, cfg.Gateway.Port)
 	fmt.Printf("  ✓ Model: %s\n", primaryModel)
 	if len(fallbackModels) > 0 {
 		fmt.Printf("  ✓ Fallbacks: %v\n", fallbackModels)

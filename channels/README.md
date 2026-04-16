@@ -35,6 +35,7 @@ channels/
 ├── manager.go          # Manager 渠道管理器（初始化、启停、出站分发）
 ├── telegram.go         # Telegram Bot 渠道（Long Polling + Markdown→HTML）
 ├── whatsapp.go         # WhatsApp 渠道（通过 WebSocket/HTTP Bridge）
+├── pairing.go          # Sender 配对认证（配对码生成/审批/撤销、原子文件写入）
 └── channels_test.go    # 测试
 ```
 
@@ -99,3 +100,21 @@ type Channel interface {
 入站: Telegram/WhatsApp API → Channel.pollLoop → BaseChannel.HandleMessage → bus.PublishInbound
 出站: bus.ConsumeOutbound → Manager.dispatchOutbound → Channel.Send → Telegram/WhatsApp API
 ```
+对码 → 新 Sender 提交配对码 → Owner 审批 → 绑定生效
+```
+
+### 核心功能
+
+| 方法 | 说明 |
+|------|------|
+| `GeneratePairingCode(ownerID)` | 生成 6 位配对码（10 分钟有效） |
+| `SubmitPairing(code, senderID, channel)` | 新 Sender 提交配对请求 |
+| `ApprovePairing(requestID)` | Owner 审批通过 |
+| `RevokePairing(senderID)` | 撤销已绑定的 Sender |
+| `IsPaired(senderID)` | 检查 Sender 是否已配对 |
+
+### 存储
+
+- JSON 文件持久化（`~/.simpleclaw/pairing.json`）
+- 原子写入（temp file + rename），防止中断导致数据损坏
+- 过期配对码自动清理

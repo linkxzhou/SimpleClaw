@@ -39,10 +39,18 @@ func ToolToSchema(t Tool) ToolDef {
 	}
 }
 
+// ApprovalChecker 审批检查接口（由 agent.ApprovalManager 实现）。
+// 定义在 tools 包内以避免 agent↔tools 循环依赖。
+type ApprovalChecker interface {
+	// CheckApproval 返回 "yes"/"no"/"always"。
+	CheckApproval(toolName string, args map[string]interface{}) string
+}
+
 // Registry 工具注册中心
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu              sync.RWMutex
+	tools           map[string]Tool
+	approvalChecker ApprovalChecker // 可选，nil 时不做审批检查
 }
 
 // NewRegistry 创建工具注册中心
@@ -50,6 +58,13 @@ func NewRegistry() *Registry {
 	return &Registry{
 		tools: make(map[string]Tool),
 	}
+}
+
+// SetApprovalChecker 设置审批检查器。
+func (r *Registry) SetApprovalChecker(checker ApprovalChecker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.approvalChecker = checker
 }
 
 // Register 注册工具
@@ -93,14 +108,23 @@ func (r *Registry) GetDefinitions() []ToolDef {
 	return defs
 }
 
-// Execute 执行工具
+// Execute 执行工具（含审批检查）。
 func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) string {
 	r.mu.RLock()
 	t, ok := r.tools[name]
+	checker := r.approvalChecker
 	r.mu.RUnlock()
 
 	if !ok {
 		return fmt.Sprintf("Error: Tool '%s' not found", name)
+	}
+
+	// 审批检查
+	if checker != nil {
+		decision := checker.CheckApproval(name, params)
+		if decision == "no" {
+			return fmt.Sprintf("Tool '%s' denied by approval policy", name)
+		}
 	}
 
 	result, err := t.Execute(ctx, params)
@@ -126,4 +150,25 @@ func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.tools)
+}
+
+// RegisterCommonTools 注册主 Agent 和子 Agent 共用的工具集。
+// 新增工具时只需改此处一处。
+func RegisterCommonTools(r *Registry, workspace, braveAPIKey string) {
+	// 文件工具
+	r.Register(&ReadFileTool{})
+	r.Register(&WriteFileTool{})
+	r.Register(&EditFileTool{})
+	r.Register(&ListDirTool{})
+
+	// Shell 工具
+	r.Register(NewExecTool(workspace))
+
+	// Web 工具
+	r.Register(NewWebSearchTool(braveAPIKey))
+	r.Register(NewWebFetchTool())
+
+	// Go 动态执行工具
+	r.Register(NewGoRunTool())
+	r.Register(NewGoAgentTool())
 }

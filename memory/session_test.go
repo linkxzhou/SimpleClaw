@@ -47,19 +47,19 @@ func TestAddMessage(t *testing.T) {
 	before := s.UpdatedAt
 
 	time.Sleep(time.Millisecond)
-	s.AddMessage("user", "hello", nil)
+	s.AddMessage("user", "hello")
 
 	if len(s.Messages) != 1 {
 		t.Fatalf("Messages count = %d, want 1", len(s.Messages))
 	}
 	msg := s.Messages[0]
-	if msg["role"] != "user" {
-		t.Errorf("role = %v, want user", msg["role"])
+	if msg.Role != "user" {
+		t.Errorf("role = %v, want user", msg.Role)
 	}
-	if msg["content"] != "hello" {
-		t.Errorf("content = %v, want hello", msg["content"])
+	if msg.Content != "hello" {
+		t.Errorf("content = %v, want hello", msg.Content)
 	}
-	if msg["timestamp"] == nil {
+	if msg.Timestamp == "" {
 		t.Error("timestamp should be set")
 	}
 	if !s.UpdatedAt.After(before) {
@@ -67,42 +67,21 @@ func TestAddMessage(t *testing.T) {
 	}
 }
 
-// TestAddMessageWithExtra 测试添加带额外字段的消息。
-func TestAddMessageWithExtra(t *testing.T) {
-	s := NewSession("test:1")
-	extra := map[string]interface{}{
-		"tool_call_id": "call_123",
-		"name":         "search",
-	}
-	s.AddMessage("tool", "result", extra)
-
-	if len(s.Messages) != 1 {
-		t.Fatalf("Messages count = %d, want 1", len(s.Messages))
-	}
-	msg := s.Messages[0]
-	if msg["tool_call_id"] != "call_123" {
-		t.Errorf("tool_call_id = %v, want call_123", msg["tool_call_id"])
-	}
-	if msg["name"] != "search" {
-		t.Errorf("name = %v, want search", msg["name"])
-	}
-}
-
 // TestAddMultipleMessages 测试添加多条消息。
 func TestAddMultipleMessages(t *testing.T) {
 	s := NewSession("test:1")
-	s.AddMessage("user", "hi", nil)
-	s.AddMessage("assistant", "hello!", nil)
-	s.AddMessage("user", "how are you?", nil)
+	s.AddMessage("user", "hi")
+	s.AddMessage("assistant", "hello!")
+	s.AddMessage("user", "how are you?")
 
 	if len(s.Messages) != 3 {
 		t.Errorf("Messages count = %d, want 3", len(s.Messages))
 	}
-	if s.Messages[0]["content"] != "hi" {
-		t.Errorf("first message content = %v, want hi", s.Messages[0]["content"])
+	if s.Messages[0].Content != "hi" {
+		t.Errorf("first message content = %v, want hi", s.Messages[0].Content)
 	}
-	if s.Messages[2]["content"] != "how are you?" {
-		t.Errorf("third message content = %v", s.Messages[2]["content"])
+	if s.Messages[2].Content != "how are you?" {
+		t.Errorf("third message content = %v", s.Messages[2].Content)
 	}
 }
 
@@ -110,7 +89,7 @@ func TestAddMultipleMessages(t *testing.T) {
 func TestGetHistoryDefault(t *testing.T) {
 	s := NewSession("test:1")
 	for i := 0; i < 5; i++ {
-		s.AddMessage("user", "msg", nil)
+		s.AddMessage("user", "msg")
 	}
 
 	history := s.GetHistory(0)
@@ -128,7 +107,7 @@ func TestGetHistoryDefault(t *testing.T) {
 func TestGetHistoryTruncation(t *testing.T) {
 	s := NewSession("test:1")
 	for i := 0; i < 10; i++ {
-		s.AddMessage("user", "msg", nil)
+		s.AddMessage("user", "msg")
 	}
 
 	history := s.GetHistory(3)
@@ -140,24 +119,21 @@ func TestGetHistoryTruncation(t *testing.T) {
 // TestGetHistoryFormat 测试返回的消息格式（仅包含 role 和 content）。
 func TestGetHistoryFormat(t *testing.T) {
 	s := NewSession("test:1")
-	s.AddMessage("user", "hello", map[string]interface{}{"extra": "data"})
+	s.AddMessage("user", "hello")
 
 	history := s.GetHistory(10)
 	if len(history) != 1 {
 		t.Fatalf("history length = %d, want 1", len(history))
 	}
 	msg := history[0]
-	if msg["role"] != "user" {
-		t.Errorf("role = %v, want user", msg["role"])
+	if msg.Role != "user" {
+		t.Errorf("role = %v, want user", msg.Role)
 	}
-	if msg["content"] != "hello" {
-		t.Errorf("content = %v, want hello", msg["content"])
+	if msg.Content != "hello" {
+		t.Errorf("content = %v, want hello", msg.Content)
 	}
-	// extra 字段不应出现在历史中
-	if _, ok := msg["extra"]; ok {
-		t.Error("extra field should not be in history")
-	}
-	if _, ok := msg["timestamp"]; ok {
+	// timestamp 不应出现在历史中
+	if msg.Timestamp != "" {
 		t.Error("timestamp field should not be in history")
 	}
 }
@@ -174,27 +150,27 @@ func TestGetHistoryEmpty(t *testing.T) {
 // TestGetHistoryKeepsRecentMessages 测试截断时保留最新消息。
 func TestGetHistoryKeepsRecentMessages(t *testing.T) {
 	s := NewSession("test:1")
-	s.AddMessage("user", "old", nil)
-	s.AddMessage("user", "middle", nil)
-	s.AddMessage("user", "recent", nil)
+	s.AddMessage("user", "old")
+	s.AddMessage("user", "middle")
+	s.AddMessage("user", "recent")
 
 	history := s.GetHistory(2)
 	if len(history) != 2 {
 		t.Fatalf("history length = %d, want 2", len(history))
 	}
-	if history[0]["content"] != "middle" {
-		t.Errorf("first = %v, want middle", history[0]["content"])
+	if history[0].Content != "middle" {
+		t.Errorf("first = %v, want middle", history[0].Content)
 	}
-	if history[1]["content"] != "recent" {
-		t.Errorf("second = %v, want recent", history[1]["content"])
+	if history[1].Content != "recent" {
+		t.Errorf("second = %v, want recent", history[1].Content)
 	}
 }
 
 // TestClear 测试清空会话。
 func TestClear(t *testing.T) {
 	s := NewSession("test:1")
-	s.AddMessage("user", "hello", nil)
-	s.AddMessage("assistant", "hi", nil)
+	s.AddMessage("user", "hello")
+	s.AddMessage("assistant", "hi")
 
 	before := s.UpdatedAt
 	time.Sleep(time.Millisecond)
@@ -265,7 +241,7 @@ func TestGetOrCreateNew(t *testing.T) {
 func TestGetOrCreateCached(t *testing.T) {
 	m := newTestSessionManager(t)
 	s1 := m.GetOrCreate("telegram:user1")
-	s1.AddMessage("user", "hello", nil)
+	s1.AddMessage("user", "hello")
 
 	s2 := m.GetOrCreate("telegram:user1")
 	if s1 != s2 {
@@ -286,8 +262,8 @@ func TestSaveAndLoad(t *testing.T) {
 
 	// 创建并保存会话
 	s := m1.GetOrCreate("whatsapp:user2")
-	s.AddMessage("user", "hello world", nil)
-	s.AddMessage("assistant", "hi there!", nil)
+	s.AddMessage("user", "hello world")
+	s.AddMessage("assistant", "hi there!")
 	s.Metadata["lang"] = "en"
 
 	if err := m1.Save(s); err != nil {
@@ -307,11 +283,11 @@ func TestSaveAndLoad(t *testing.T) {
 	if len(loaded.Messages) != 2 {
 		t.Fatalf("loaded messages count = %d, want 2", len(loaded.Messages))
 	}
-	if loaded.Messages[0]["content"] != "hello world" {
-		t.Errorf("first message = %v, want 'hello world'", loaded.Messages[0]["content"])
+	if loaded.Messages[0].Content != "hello world" {
+		t.Errorf("first message = %v, want 'hello world'", loaded.Messages[0].Content)
 	}
-	if loaded.Messages[1]["role"] != "assistant" {
-		t.Errorf("second role = %v, want assistant", loaded.Messages[1]["role"])
+	if loaded.Messages[1].Role != "assistant" {
+		t.Errorf("second role = %v, want assistant", loaded.Messages[1].Role)
 	}
 	if loaded.Metadata["lang"] != "en" {
 		t.Errorf("metadata lang = %v, want en", loaded.Metadata["lang"])
@@ -322,7 +298,7 @@ func TestSaveAndLoad(t *testing.T) {
 func TestSaveCreatesFile(t *testing.T) {
 	m := newTestSessionManager(t)
 	s := m.GetOrCreate("cli:test")
-	s.AddMessage("user", "test", nil)
+	s.AddMessage("user", "test")
 
 	if err := m.Save(s); err != nil {
 		t.Fatalf("Save error: %v", err)
@@ -340,14 +316,14 @@ func TestSaveCreatesFile(t *testing.T) {
 func TestSaveOverwrite(t *testing.T) {
 	m := newTestSessionManager(t)
 	s := m.GetOrCreate("cli:test")
-	s.AddMessage("user", "first", nil)
+	s.AddMessage("user", "first")
 	if err := m.Save(s); err != nil {
 		t.Fatalf("Save error: %v", err)
 	}
 
 	// 添加更多消息后覆盖
-	s.AddMessage("assistant", "second", nil)
-	s.AddMessage("user", "third", nil)
+	s.AddMessage("assistant", "second")
+	s.AddMessage("user", "third")
 	if err := m.Save(s); err != nil {
 		t.Fatalf("Save (overwrite) error: %v", err)
 	}
@@ -365,7 +341,7 @@ func TestSaveOverwrite(t *testing.T) {
 func TestDelete(t *testing.T) {
 	m := newTestSessionManager(t)
 	s := m.GetOrCreate("telegram:del1")
-	s.AddMessage("user", "hello", nil)
+	s.AddMessage("user", "hello")
 	if err := m.Save(s); err != nil {
 		t.Fatalf("Save error: %v", err)
 	}
@@ -396,7 +372,7 @@ func TestDeleteNonExistent(t *testing.T) {
 func TestDeleteRemovesFile(t *testing.T) {
 	m := newTestSessionManager(t)
 	s := m.GetOrCreate("cli:delfile")
-	s.AddMessage("user", "msg", nil)
+	s.AddMessage("user", "msg")
 	m.Save(s)
 
 	// 先确认文件存在
@@ -427,7 +403,7 @@ func TestListSessions(t *testing.T) {
 	// 创建多个会话
 	for _, key := range []string{"telegram:a", "whatsapp:b", "cli:c"} {
 		s := m.GetOrCreate(key)
-		s.AddMessage("user", "hi", nil)
+		s.AddMessage("user", "hi")
 		if err := m.Save(s); err != nil {
 			t.Fatalf("Save error: %v", err)
 		}
@@ -460,7 +436,7 @@ func TestListSessionsSortOrder(t *testing.T) {
 	keys := []string{"a:1", "b:2", "c:3"}
 	for _, key := range keys {
 		s := m.GetOrCreate(key)
-		s.AddMessage("user", "hi", nil)
+		s.AddMessage("user", "hi")
 		m.Save(s)
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -483,7 +459,7 @@ func TestListSessionsIgnoresNonJSONL(t *testing.T) {
 	m := newTestSessionManager(t)
 
 	s := m.GetOrCreate("test:valid")
-	s.AddMessage("user", "hi", nil)
+	s.AddMessage("user", "hi")
 	m.Save(s)
 
 	os.WriteFile(filepath.Join(m.sessionsDir, "notes.txt"), []byte("not a session"), 0644)
@@ -532,7 +508,7 @@ func TestConcurrentSave(t *testing.T) {
 			defer wg.Done()
 			key := "ch:" + string(rune('a'+idx))
 			s := m.GetOrCreate(key)
-			s.AddMessage("user", "msg", nil)
+			s.AddMessage("user", "msg")
 			if err := m.Save(s); err != nil {
 				t.Errorf("Save error for %s: %v", key, err)
 			}
@@ -573,7 +549,7 @@ func TestLargeSession(t *testing.T) {
 
 	s := m1.GetOrCreate("cli:large")
 	for i := 0; i < 500; i++ {
-		s.AddMessage("user", "message content that is reasonably long for testing purposes", nil)
+		s.AddMessage("user", "message content that is reasonably long for testing purposes")
 	}
 
 	if err := m1.Save(s); err != nil {
@@ -592,7 +568,7 @@ func TestSessionWithSpecialCharKey(t *testing.T) {
 	m := newTestSessionManager(t)
 
 	s := m.GetOrCreate("slack:channel/thread")
-	s.AddMessage("user", "test", nil)
+	s.AddMessage("user", "test")
 	if err := m.Save(s); err != nil {
 		t.Fatalf("Save error: %v", err)
 	}
@@ -613,7 +589,7 @@ func TestSessionMetadataPreserved(t *testing.T) {
 	s := m1.GetOrCreate("test:meta")
 	s.Metadata["user_name"] = "Alice"
 	s.Metadata["preference"] = "dark_mode"
-	s.AddMessage("user", "hi", nil)
+	s.AddMessage("user", "hi")
 	m1.Save(s)
 
 	m2, _ := NewSessionManager(dir, nil)
@@ -633,7 +609,7 @@ func TestSessionCreatedAtPreserved(t *testing.T) {
 
 	s := m1.GetOrCreate("test:time")
 	originalCreated := s.CreatedAt
-	s.AddMessage("user", "hi", nil)
+	s.AddMessage("user", "hi")
 	m1.Save(s)
 
 	time.Sleep(10 * time.Millisecond)
